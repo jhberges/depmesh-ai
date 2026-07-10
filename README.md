@@ -62,6 +62,68 @@ MCP client. For Claude Code, add to `.mcp.json`:
 The agent can then vet every dependency it is about to install, and gets told
 explicitly when a package name does not exist.
 
+## Policy: "is it allowed *here*?"
+
+The verdict says whether a package is healthy; a **policy file** says whether
+your organization allows it. Drop a `depmesh.policy.json` next to where the
+tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
+
+```json
+{
+  "min_score": 70,
+  "fail_on": "caution",
+  "licenses": { "allow": ["MIT", "Apache", "BSD", "ISC"], "require_declared": true },
+  "exceptions": [
+    { "ecosystem": "maven", "package": "org.apache.commons:commons-lang3",
+      "reason": "Apache-2.0 via parent POM, approved by security architecture",
+      "expires": "2027-06-30" }
+  ],
+  "audit_log": "/var/log/depmesh/decisions.jsonl"
+}
+```
+
+- License rules are case-insensitive substring matches; `deny` beats `allow`.
+- Exceptions are explicit, justified, and **expire** — they must be renewed,
+  not immortal. Expired or malformed exceptions fail closed.
+- The CLI exit code, the MCP tool output, and the API status code all follow
+  the policy decision when one is configured.
+
+## Audit trail
+
+Set `audit_log` in the policy (or `--audit-log`) and every decision — from the
+CLI, the MCP server, or the API — appends one JSON line: timestamp, actor,
+surface, package, verdict, score, policy result, degraded sources. Ready for
+Splunk/ELK ingestion; if the audit write fails, the decision is withheld
+(fail closed).
+
+## HTTP API (internal deployment)
+
+For organizations where developer machines shouldn't talk to registries
+directly, run one instance inside the network boundary:
+
+```bash
+depmesh-ai api --listen :8385 --policy /etc/depmesh/policy.json
+# GET /v1/vet/{ecosystem}/{package}  → 200 allowed | 409 blocked | 502 registry unreachable
+# GET /healthz
+curl localhost:8385/v1/vet/npm/express
+```
+
+Package paths may contain slashes and colons (`/v1/vet/npm/@types/node`,
+`/v1/vet/maven/org.apache.commons:commons-lang3`).
+
+## Telemetry (opt-in, off by default)
+
+A REJECT for a *nonexistent* package is usually the fingerprint of an
+LLM-hallucinated name. With telemetry enabled — and only then — those
+observations are reported so slopsquat target names can be tracked before
+attackers register them. Enable by setting `telemetry_url` in the policy file
+or `$DEPMESH_TELEMETRY_URL`.
+
+Privacy by design: the payload is exactly `{ecosystem, package, time,
+tool_version}` for nonexistent-package rejections only. No usernames,
+hostnames, repository names, or IP-derived data; failures never affect the
+vet result. Nothing is ever sent unless an endpoint is explicitly configured.
+
 ## Signals
 
 | Signal | Source | Notes |

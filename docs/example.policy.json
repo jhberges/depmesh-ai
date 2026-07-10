@@ -1,0 +1,19 @@
+{
+  "min_score": 70,
+  "fail_on": "caution",
+  "licenses": {
+    "allow": ["MIT", "Apache", "BSD", "ISC", "MPL"],
+    "deny": ["AGPL", "SSPL"],
+    "require_declared": true
+  },
+  "ecosystems": ["npm", "pypi", "maven"],
+  "exceptions": [
+    {
+      "ecosystem": "maven",
+      "package": "org.apache.commons:commons-lang3",
+      "reason": "Apache-2.0 confirmed via parent POM; approved by security architecture",
+      "expires": "2027-06-30"
+    }
+  ],
+  "audit_log": "depmesh-decisions.jsonl"
+}

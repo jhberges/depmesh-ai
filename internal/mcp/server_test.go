@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/jhberges/depmesh-ai/internal/gate"
 )
 
 func rpc(t *testing.T, requests ...string) []map[string]any {
 	t.Helper()
 	var out strings.Builder
-	if err := Serve(strings.NewReader(strings.Join(requests, "\n")+"\n"), &out); err != nil {
+	g := &gate.Gate{} // no policy, no audit, no telemetry
+	if err := Serve(g, strings.NewReader(strings.Join(requests, "\n")+"\n"), &out); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
 	var responses []map[string]any

@@ -1,6 +1,2 @@
-__pycache__/
-*.pyc
-*.egg-info/
+/depmesh-ai
 dist/
-build/
-.pytest_cache/

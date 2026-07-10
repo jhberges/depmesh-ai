@@ -25,13 +25,15 @@ reasons included.
 
 ## Quick start
 
-Zero runtime dependencies — Python 3.10+ standard library only.
+Written in Go with **zero runtime dependencies** (standard library only);
+ships as a single static binary.
 
 ```bash
-# CLI
-python -m depmesh_ai vet npm express
-python -m depmesh_ai vet pypi requests --json
-python -m depmesh_ai vet maven org.apache.commons:commons-lang3
+go build -o depmesh-ai ./cmd/depmesh-ai   # or: go install github.com/jhberges/depmesh-ai/cmd/depmesh-ai@latest
+
+./depmesh-ai vet npm express
+./depmesh-ai vet pypi requests --json
+./depmesh-ai vet maven org.apache.commons:commons-lang3
 
 # Exit code: 0 = ADOPT/CAUTION, 1 = REJECT, 2 = registry unreachable
 ```
@@ -46,13 +48,13 @@ Example output:
 
 ## As an MCP server
 
-Run `python -m depmesh_ai serve` and the tool `vet_dependency` becomes
-available to any MCP client. For Claude Code, add to `.mcp.json`:
+Run `depmesh-ai serve` and the tool `vet_dependency` becomes available to any
+MCP client. For Claude Code, add to `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "depmesh": { "command": "python", "args": ["-m", "depmesh_ai", "serve"] }
+    "depmesh": { "command": "depmesh-ai", "args": ["serve"] }
   }
 }
 ```
@@ -96,6 +98,6 @@ over and why the architecture changed.
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
+go test ./...
+go vet ./...
 ```

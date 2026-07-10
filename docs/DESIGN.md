@@ -54,16 +54,23 @@ The metric *vocabulary* survived; the code did not (by design).
 ## Architecture
 
 ```
-cli.py ──┐
-         ├── vet.py (verdict engine: signals → score → ADOPT/CAUTION/REJECT)
-mcp_server.py ┘         │
-                        ├── metrics.py (release pace, ported from DepMesh)
-                        └── sources/
-                            ├── npm.py    ─ registry.npmjs.org   (authoritative)
-                            ├── pypi.py   ─ pypi.org             (authoritative)
-                            ├── maven.py  ─ repo1.maven.org      (authoritative)
-                            └── depsdev.py ─ api.deps.dev        (optional enrichment)
+cmd/depmesh-ai (CLI) ──┐
+                       ├── internal/vet (verdict engine: signals → score → ADOPT/CAUTION/REJECT)
+internal/mcp (stdio) ──┘         │
+                                 ├── internal/metrics (release pace, ported from DepMesh)
+                                 └── internal/sources/
+                                     ├── npm.go     ─ registry.npmjs.org  (authoritative)
+                                     ├── pypi.go    ─ pypi.org            (authoritative)
+                                     ├── maven.go   ─ repo1.maven.org     (authoritative)
+                                     └── depsdev.go ─ api.deps.dev        (optional enrichment)
 ```
+
+**Language: Go.** An initial prototype was written in Python to validate the
+design; it was rewritten in Go (same structure, same signals, same ported
+test fixtures) because the tool's shape favors it: a single static binary is
+the easiest thing to drop into a developer machine or CI image, the standard
+library covers HTTP/JSON/XML/regexp so the zero-dependency rule holds, and a
+CLI/MCP server benefits from instant startup.
 
 Design rules:
 

@@ -123,6 +123,31 @@ Privacy by design: the payload is exactly `{ecosystem, package, time,
 tool_version}` for nonexistent-package rejections only. No usernames,
 hostnames, repository names, or IP-derived data; failures never affect the
 vet result. Nothing is ever sent unless an endpoint is explicitly configured.
+Authenticate to a hosted receiver with a per-tenant key in
+`$DEPMESH_TELEMETRY_TOKEN` (sent as a bearer header; kept out of the
+version-controlled policy file).
+
+## depmesh-cloud (hosted receiver + console)
+
+`cmd/depmesh-cloud` is the multi-tenant reception side — the SaaS backend for
+[depmesh.com](https://depmesh.com):
+
+- **Telemetry ingest** (`POST /v1/telemetry`) authenticated per tenant by
+  ingest key; the tenant is derived from the key, never trusted from the payload.
+- **Generic OIDC login** — works with any provider (Google, Entra ID, Auth0,
+  Keycloak…) via discovery + PKCE + JWKS id_token verification. The provider's
+  id_token is exchanged for a DepMesh **session JWT** (HS256) that carries
+  identity, tenant, and role through the whole value chain.
+- **Customer console** — per-tenant dashboard (attempts caught, 30-day chart,
+  top names) plus self-service ingest-key rotation.
+- **Admin metrics** — global counts and per-tenant breakdown for allowlisted
+  admin logins.
+- Storage is files on disk (tenants + monthly JSONL), so it runs on the
+  cheapest VM available. The frontend is the [depmesh-front](https://github.com/jhberges/depmesh-front)
+  static console, served by the same binary.
+
+Deployment (single VM, Caddy TLS, ~€6/month) is documented in
+[docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Signals
 

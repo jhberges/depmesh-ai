@@ -27,6 +27,11 @@ import (
 
 const EnvVar = "DEPMESH_TELEMETRY_URL"
 
+// TokenEnvVar carries the per-tenant ingest key issued by depmesh-cloud,
+// sent as an Authorization bearer header. Kept in the environment rather
+// than the (version-controlled) policy file so the secret stays out of git.
+const TokenEnvVar = "DEPMESH_TELEMETRY_TOKEN"
+
 var client = &http.Client{Timeout: 3 * time.Second}
 
 type report struct {
@@ -62,7 +67,15 @@ func ReportNonexistent(endpoint, version string, v *vet.Verdict) {
 	if err != nil {
 		return
 	}
-	response, err := client.Post(endpoint, "application/json", bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if token := os.Getenv(TokenEnvVar); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return
 	}

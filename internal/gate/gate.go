@@ -13,7 +13,9 @@ import (
 	"github.com/jhberges/depmesh-ai/internal/vet"
 )
 
-const Version = "0.2.0"
+// Version is the build version. It defaults to a dev value and is stamped at
+// release time via -ldflags "-X .../internal/gate.Version=vX.Y.Z".
+var Version = "0.2.0-dev"
 
 type Gate struct {
 	Policy    *policy.Policy

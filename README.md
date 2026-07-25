@@ -23,17 +23,57 @@ that name (slopsquatting). And even real packages can be abandoned, deprecated,
 or unlicensed. `depmesh-ai` is the pre-install gate: one call, one verdict,
 reasons included.
 
-## Quick start
+## Install
 
 Written in Go with **zero runtime dependencies** (standard library only);
-ships as a single static binary.
+ships as a single static binary. The installers download it, verify its
+checksum, and register the MCP server **globally** with every coding CLI and
+IDE they find (see [As an MCP server](#as-an-mcp-server)):
+
+```bash
+# Linux / macOS
+curl -fsSL https://github.com/jhberges/depmesh-ai/releases/latest/download/install.sh | bash
+```
+
+```powershell
+# Windows
+irm https://github.com/jhberges/depmesh-ai/releases/latest/download/install.ps1 | iex
+```
+
+They prompt for the install location and for each client before touching
+anything, and they never overwrite an existing config without leaving a
+`.depmesh.bak` beside it. Both accept flags for unattended runs:
+
+```bash
+curl -fsSL .../install.sh | bash -s -- --yes --dir ~/.local/bin --clients claude,copilot
+```
+
+| Flag | PowerShell | Meaning |
+|---|---|---|
+| `--dir DIR` | `-InstallDir` | where the binary goes |
+| `--version TAG` | `-Version` | release to install (default: latest) |
+| `--policy FILE` | `-Policy` | org policy file to pin into every client config |
+| `--clients LIST` | `-Clients` | `claude,copilot,codex,cursor,vscode` \| `all` \| `none` |
+| `--yes` | `-Yes` | accept every default, never prompt |
+| `--no-configure` | `-NoConfigure` | install the binary only |
+
+Set `$GITHUB_TOKEN` when the repository is private, or
+`$DEPMESH_DOWNLOAD_BASE` to pull the assets from an internal mirror. The
+installers are themselves release assets listed in `checksums.txt`, so they can
+be verified before being piped to a shell.
+
+From source, or without the installer:
 
 ```bash
 go build -o depmesh-ai ./cmd/depmesh-ai   # or: go install github.com/jhberges/depmesh-ai/cmd/depmesh-ai@latest
+```
 
-./depmesh-ai vet npm express
-./depmesh-ai vet pypi requests --json
-./depmesh-ai vet maven org.apache.commons:commons-lang3
+## Quick start
+
+```bash
+depmesh-ai vet npm express
+depmesh-ai vet pypi requests --json
+depmesh-ai vet maven org.apache.commons:commons-lang3
 
 # Exit code: 0 = ADOPT/CAUTION, 1 = REJECT, 2 = registry unreachable
 ```
@@ -49,7 +89,10 @@ Example output:
 ## As an MCP server
 
 Run `depmesh-ai serve` and the tool `vet_dependency` becomes available to any
-MCP client. For Claude Code, add to `.mcp.json`:
+MCP client. The agent can then vet every dependency it is about to install, and
+gets told explicitly when a package name does not exist.
+
+For one project, drop this in `.mcp.json` at the repo root:
 
 ```json
 {
@@ -59,8 +102,53 @@ MCP client. For Claude Code, add to `.mcp.json`:
 }
 ```
 
-The agent can then vet every dependency it is about to install, and gets told
-explicitly when a package name does not exist.
+### Global setup
+
+A pre-install gate that only covers the repo you remembered to configure isn't
+much of a gate. Nothing in `serve` is project-scoped, so register it once per
+machine instead — `scripts/install.sh` and `scripts/install.ps1` do exactly
+this, and here is what they write:
+
+| Client | Global registration |
+|---|---|
+| Claude Code | `claude mcp add depmesh --scope user -- /usr/local/bin/depmesh-ai serve` |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` (`$COPILOT_HOME` moves it) |
+| Codex CLI | `codex mcp add depmesh -- /usr/local/bin/depmesh-ai serve` |
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code | `code --add-mcp '{"name":"depmesh","command":"/usr/local/bin/depmesh-ai","args":["serve"]}'` |
+
+Claude Code's `--scope user` is the difference between "this project" and
+"every project"; the default scope is `local`. Copilot names stdio servers
+`local` and hides the tool unless `tools` is set:
+
+```json
+{
+  "mcpServers": {
+    "depmesh": {
+      "type": "local",
+      "command": "/usr/local/bin/depmesh-ai",
+      "args": ["serve"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Three things worth knowing before you register it by hand:
+
+- **Use an absolute path.** An MCP client inherits its own environment, not
+  your shell's, and `go install` drops the binary in `~/go/bin` — frequently
+  not on the PATH of a desktop-launched agent. A bare `depmesh-ai` is the usual
+  cause of a global server that silently fails to start.
+- **Policy discovery follows the client, not the project.** With no explicit
+  path, `./depmesh.policy.json` is resolved against the working directory the
+  client launched the server in, and it is read once at startup. That gives
+  per-repo policy for free, but for one org-wide file pin it instead — pass
+  `--policy /etc/depmesh/policy.json` in `args`, or set `DEPMESH_POLICY` in the
+  server's `env` (`--policy` / `-Policy` in the installers does this for you).
+- **Keep `audit_log` absolute** for the same reason. An audit write that fails
+  withholds the decision, so a relative path that lands somewhere unwritable
+  turns every vet into an error rather than a verdict.
 
 ## Policy: "is it allowed *here*?"
 

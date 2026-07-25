@@ -20,7 +20,7 @@ var Version = "0.2.0-dev"
 type Gate struct {
 	Policy    *policy.Policy
 	AuditLog  string
-	Telemetry string
+	Telemetry telemetry.Config
 }
 
 // Outcome is a verdict plus the policy decision about it. Policy is nil when
@@ -61,7 +61,7 @@ func New(policyPath, auditOverride string) (*Gate, error) {
 	if auditOverride != "" {
 		g.AuditLog = auditOverride
 	}
-	g.Telemetry = telemetry.Endpoint(policyTelemetry)
+	g.Telemetry = telemetry.Resolve(policyTelemetry)
 	return g, nil
 }
 

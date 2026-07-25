@@ -29,6 +29,10 @@ Written in Go with **zero runtime dependencies** (standard library only);
 ships as a single static binary.
 
 ```bash
+# release binary, into ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/jhberges/depmesh-ai/main/install.sh | bash
+
+# or from source
 go build -o depmesh-ai ./cmd/depmesh-ai   # or: go install github.com/jhberges/depmesh-ai/cmd/depmesh-ai@latest
 
 ./depmesh-ai vet npm express
@@ -37,6 +41,12 @@ go build -o depmesh-ai ./cmd/depmesh-ai   # or: go install github.com/jhberges/d
 
 # Exit code: 0 = ADOPT/CAUTION, 1 = REJECT, 2 = registry unreachable
 ```
+
+The installer verifies the release checksum, asks once whether you want to
+share hallucinated package names (see [Telemetry](#telemetry-opt-in-off-by-default)),
+and takes `--bin-dir`, `--version`, `--telemetry` / `--no-telemetry` for
+unattended installs. It never asks when there is no terminal — piped into a
+provisioning script it installs with telemetry off.
 
 Example output:
 
@@ -116,16 +126,34 @@ Package paths may contain slashes and colons (`/v1/vet/npm/@types/node`,
 A REJECT for a *nonexistent* package is usually the fingerprint of an
 LLM-hallucinated name. With telemetry enabled — and only then — those
 observations are reported so slopsquat target names can be tracked before
-attackers register them. Enable by setting `telemetry_url` in the policy file
-or `$DEPMESH_TELEMETRY_URL`.
+attackers register them.
 
 Privacy by design: the payload is exactly `{ecosystem, package, time,
 tool_version}` for nonexistent-package rejections only. No usernames,
 hostnames, repository names, or IP-derived data; failures never affect the
-vet result. Nothing is ever sent unless an endpoint is explicitly configured.
-Authenticate to a hosted receiver with a per-tenant key in
-`$DEPMESH_TELEMETRY_TOKEN` (sent as a bearer header; kept out of the
-version-controlled policy file).
+vet result. Nothing is ever sent unless an endpoint is explicitly configured —
+there is no implicit fallback to the hosted receiver.
+
+Three ways to configure it, most specific first:
+
+| Source | Scope |
+|---|---|
+| `telemetry_url` in the policy file | the repo or org — reviewed and version-controlled |
+| `$DEPMESH_TELEMETRY_URL` | one shell or CI job |
+| `~/.config/depmesh/telemetry.json` | this developer, all surfaces |
+
+The last one is what `install.sh` writes when you answer yes to its consent
+prompt — `{"url": "https://depmesh.com/v1/telemetry"}`, mode 0600. Because it
+is a file rather than an environment variable, it also reaches MCP servers
+started by an agent that has no shell environment of its own. `$XDG_CONFIG_HOME`
+is honoured; to opt out again, `rm` the file (or re-run the installer with
+`--no-telemetry`).
+
+Authenticate to a hosted receiver with a per-tenant ingest key — in
+`$DEPMESH_TELEMETRY_TOKEN`, or as `"token"` in that file — sent as a bearer
+header and kept out of the version-controlled policy file. A stored key is
+only ever sent to the endpoint stored alongside it: if policy or environment
+redirects telemetry elsewhere, the key stays behind.
 
 ## depmesh-cloud (hosted receiver + console)
 

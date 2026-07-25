@@ -60,6 +60,11 @@ jobs:
               tar -C "$stage" -czf "dist/${archive}.tar.gz" .
             fi
           done
+          # The installers are release assets too, so they can be curl'd
+          # straight from the release page. They land in checksums.txt with
+          # everything else, which is what lets a paranoid user verify the
+          # script before piping it to a shell.
+          cp scripts/install.sh scripts/install.ps1 dist/
           (cd dist && sha256sum ./* > checksums.txt)
           ls -la dist
 

@@ -19,6 +19,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Format
+        run: |
+          unformatted="$(gofmt -l .)"
+          [ -z "$unformatted" ] || { echo "gofmt needed:"; echo "$unformatted"; exit 1; }
+
       - name: Vet
         run: go vet ./...
 
@@ -27,3 +32,42 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      # The selling point of a supply-chain-security tool is that it does not
+      # enlarge your supply chain. That is a claim in the README, so it is a
+      # gate here — otherwise the first convenient library quietly ends it.
+      - name: Assert zero external dependencies
+        run: |
+          set -euo pipefail
+          if [ -e go.sum ]; then
+            echo "go.sum exists — an external dependency crept in:"
+            cat go.sum
+            exit 1
+          fi
+          external="$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./... \
+            | grep -v '^github.com/jhberges/depmesh-ai' || true)"
+          if [ -n "$external" ]; then
+            echo "external dependencies found:"
+            echo "$external"
+            exit 1
+          fi
+          echo "stdlib only"
+
+      # The two installers drifted once already, and what fell through the gap
+      # was the telemetry consent prompt: present on Unix, absent on Windows.
+      - name: Assert installer parity
+        run: scripts/check-installer-parity.sh
+
+      - name: Shellcheck the installer
+        run: shellcheck -S warning scripts/install.sh scripts/check-installer-parity.sh
+
+      # The installers touch user machines, so a syntax error in the one that
+      # cannot be run on this runner is worth catching by parsing it.
+      - name: Parse install.ps1
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD/scripts/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Host $_ }; exit 1 }
+          Write-Host 'install.ps1 parses cleanly'

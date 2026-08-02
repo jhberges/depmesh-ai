@@ -47,12 +47,14 @@ jobs:
             stage="build/${os}_${arch}"
             mkdir -p "$stage"
             ext=""; [ "$os" = windows ] && ext=".exe"
-            for cmd in depmesh-ai depmesh-cloud; do
-              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-                go build -trimpath -ldflags "$ldflags" \
-                -o "$stage/${cmd}${ext}" "./cmd/${cmd}"
-            done
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "$ldflags" \
+              -o "$stage/depmesh-ai${ext}" ./cmd/depmesh-ai
             cp README.md "$stage/" || true
+            # The archive name is a contract: scripts/install.sh and
+            # scripts/install.ps1 both construct it literally and then look it
+            # up in checksums.txt. Renaming it here breaks `curl | bash` for
+            # every existing user — change all three together or not at all.
             archive="depmesh_${VERSION}_${os}_${arch}"
             if [ "$os" = windows ]; then
               (cd "$stage" && zip -qr "../../dist/${archive}.zip" .)

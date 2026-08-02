@@ -1,2 +1,7 @@
 /depmesh-ai
 dist/
+
+# Working notes kept in the repo root but never part of it. This repository is
+# public; a stray `git add -A` should not be able to publish a scratch file.
+/*.local.md
+/split-and-prepare-for-launch.md

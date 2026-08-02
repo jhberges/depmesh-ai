@@ -296,6 +296,10 @@ if [ -z "$INSTALL_DIR" ]; then
 	fi
 	INSTALL_DIR="$(ask "Install $BIN_NAME $VERSION to which directory?" "$INSTALL_DIR")"
 fi
+# A tilde typed at a prompt arrives as a literal character — the shell never
+# saw it, so nothing expanded it. Matching it quoted is the point; expanding it
+# here is the fix. shellcheck cannot tell the two situations apart.
+# shellcheck disable=SC2088
 case "$INSTALL_DIR" in "~"|"~/"*) INSTALL_DIR="$HOME${INSTALL_DIR#\~}" ;; esac
 
 SUDO=""
@@ -508,6 +512,8 @@ if [ -z "$POLICY_FILE" ] && [ -n "$TTY" ]; then
 		POLICY_FILE="$(ask "  Policy file path" "$HOME/.config/depmesh/policy.json")"
 	fi
 fi
+# Literal tilde from a prompt, as above.
+# shellcheck disable=SC2088
 case "$POLICY_FILE" in "~"|"~/"*) POLICY_FILE="$HOME${POLICY_FILE#\~}" ;; esac
 if [ -n "$POLICY_FILE" ]; then
 	case "$POLICY_FILE" in
@@ -702,6 +708,9 @@ none)
 	fi ;;
 *)
 	for client in $(printf '%s' "$CLIENTS" | tr ',' ' '); do
+		# Constant subject on purpose: this is the POSIX idiom for "is
+		# $client one of these", with the spaces making it whole-word.
+		# shellcheck disable=SC2194
 		case " claude copilot codex cursor vscode " in
 		*" $client "*)
 			has_client "$client" && SELECTED="$SELECTED $client" ||

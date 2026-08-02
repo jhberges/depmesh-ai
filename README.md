@@ -25,10 +25,14 @@ reasons included.
 
 ## Install
 
-Written in Go with **zero runtime dependencies** (standard library only);
-ships as a single static binary. The installers download it, verify its
-checksum, and register the MCP server **globally** with every coding CLI and
-IDE they find (see [As an MCP server](#as-an-mcp-server)):
+Written in Go with **zero dependencies** — standard library only, no `go.sum`,
+nothing to audit but this repository. A tool that exists to police your supply
+chain should not enlarge it, so CI fails the build if a single external import
+appears. Ships as one static binary.
+
+The installers download it, verify its checksum, and register the MCP server
+**globally** with every coding CLI and IDE they find (see
+[As an MCP server](#as-an-mcp-server)):
 
 ```bash
 # Linux / macOS
@@ -243,27 +247,13 @@ header and kept out of the version-controlled policy file. A stored key is
 only ever sent to the endpoint stored alongside it: if policy or environment
 redirects telemetry elsewhere, the key stays behind.
 
-## depmesh-cloud (hosted receiver + console)
+### Where reports go
 
-`cmd/depmesh-cloud` is the multi-tenant reception side — the SaaS backend for
-[depmesh.com](https://depmesh.com):
-
-- **Telemetry ingest** (`POST /v1/telemetry`) authenticated per tenant by
-  ingest key; the tenant is derived from the key, never trusted from the payload.
-- **Generic OIDC login** — works with any provider (Google, Entra ID, Auth0,
-  Keycloak…) via discovery + PKCE + JWKS id_token verification. The provider's
-  id_token is exchanged for a DepMesh **session JWT** (HS256) that carries
-  identity, tenant, and role through the whole value chain.
-- **Customer console** — per-tenant dashboard (attempts caught, 30-day chart,
-  top names) plus self-service ingest-key rotation.
-- **Admin metrics** — global counts and per-tenant breakdown for allowlisted
-  admin logins.
-- Storage is files on disk (tenants + monthly JSONL), so it runs on the
-  cheapest VM available. The frontend is the [depmesh-front](https://github.com/jhberges/depmesh-front)
-  static console, served by the same binary.
-
-Deployment (single VM, Caddy TLS, ~€6/month) is documented in
-[docs/DEPLOY.md](docs/DEPLOY.md).
+Nowhere, unless you point them somewhere. The receiver is whatever URL you
+configure — run your own, or use the hosted one at
+[depmesh.com](https://depmesh.com). The request format is one small documented
+`POST`, specified in [docs/TELEMETRY-PROTOCOL.md](docs/TELEMETRY-PROTOCOL.md),
+so an internal endpoint is a few lines of code to implement.
 
 ## Signals
 

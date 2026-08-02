@@ -1,0 +1,7 @@
+{
+  "kind": "nonexistent_package",
+  "ecosystem": "npm",
+  "package": "some-hallucinated-name",
+  "time": "2026-08-02T09:41:00Z",
+  "tool_version": "v0.3.0"
+}

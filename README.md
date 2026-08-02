@@ -60,19 +60,24 @@ curl -fsSL .../install.sh | bash -s -- --yes --dir ~/.local/bin --clients claude
 | `--clients LIST` | `-Clients` | `claude,copilot,codex,cursor,vscode` \| `all` \| `none` |
 | `--yes` | `-Yes` | accept every default, never prompt |
 | `--no-configure` | `-NoConfigure` | install the binary only |
+| `--telemetry` | `-Telemetry` | opt in without being asked |
+| `--no-telemetry` | `-NoTelemetry` | opt out without being asked |
+| `--telemetry-url URL` | `-TelemetryUrl` | receiver endpoint |
+| `--telemetry-token KEY` | `-TelemetryToken` | per-tenant ingest key |
+
+The two scripts are kept option-for-option identical, and CI fails if they
+drift — see `scripts/check-installer-parity.sh`. Telemetry is only ever
+switched on by an explicit answer or an explicit flag: an unattended run
+without one of the telemetry flags leaves it exactly as it found it.
 
 Set `$GITHUB_TOKEN` when the repository is private, or
 `$DEPMESH_DOWNLOAD_BASE` to pull the assets from an internal mirror. The
 installers are themselves release assets listed in `checksums.txt`, so they can
 be verified before being piped to a shell.
 
-From source, or without the installer:
+Without the installer:
 
 ```bash
-# release binary, into ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/jhberges/depmesh-ai/main/install.sh | bash
-
-# or from source
 go build -o depmesh-ai ./cmd/depmesh-ai   # or: go install github.com/jhberges/depmesh-ai/cmd/depmesh-ai@latest
 ```
 
@@ -234,7 +239,7 @@ Three ways to configure it, most specific first:
 | `$DEPMESH_TELEMETRY_URL` | one shell or CI job |
 | `~/.config/depmesh/telemetry.json` | this developer, all surfaces |
 
-The last one is what `install.sh` writes when you answer yes to its consent
+The last one is what the installer writes when you answer yes to its consent
 prompt — `{"url": "https://depmesh.com/v1/telemetry"}`, mode 0600. Because it
 is a file rather than an environment variable, it also reaches MCP servers
 started by an agent that has no shell environment of its own. `$XDG_CONFIG_HOME`

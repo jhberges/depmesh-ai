@@ -39,6 +39,17 @@ DOWNLOAD_BASE="${DEPMESH_DOWNLOAD_BASE:-}"
 BIN_NAME="depmesh-ai"
 SERVER_NAME="depmesh"
 
+# Telemetry consent. "ask" is the default and degrades to "skip" (leave whatever
+# is already configured alone) when there is no terminal, so an unattended run
+# can never switch telemetry on.
+TELEMETRY="${DEPMESH_TELEMETRY:-ask}"
+TELEMETRY_URL="${DEPMESH_TELEMETRY_URL:-}"
+TELEMETRY_TOKEN="${DEPMESH_TELEMETRY_TOKEN:-}"
+DEFAULT_TELEMETRY_URL="https://depmesh.com/v1/telemetry"
+# Must match telemetry.ConfigPath() in the binary: $XDG_CONFIG_HOME, else
+# ~/.config — the same on Linux and macOS, so script and binary always agree.
+CONSENT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/depmesh/telemetry.json"
+
 # --- output helpers ---------------------------------------------------------
 
 if [ -t 2 ]; then
@@ -65,6 +76,12 @@ usage() {
 	  --no-configure  install the binary only
 	  -h, --help      this message
 
+	Telemetry (off unless you turn it on; you are asked once, interactively):
+	  --telemetry            enable without asking
+	  --no-telemetry         disable without asking
+	  --telemetry-url URL    receiver endpoint      (default: $DEFAULT_TELEMETRY_URL)
+	  --telemetry-token KEY  per-tenant ingest key  (\$DEPMESH_TELEMETRY_TOKEN)
+
 	Private repositories: set \$GITHUB_TOKEN (or \$DEPMESH_GITHUB_TOKEN).
 	Internal mirror of the assets: set \$DEPMESH_DOWNLOAD_BASE.
 	EOF
@@ -85,6 +102,12 @@ while [ $# -gt 0 ]; do
 	--clients=*)    CLIENTS="${1#*=}"; shift ;;
 	-y|--yes)       ASSUME_YES=1; shift ;;
 	--no-configure) CONFIGURE=0; shift ;;
+	--telemetry)    TELEMETRY=yes; shift ;;
+	--no-telemetry) TELEMETRY=no; shift ;;
+	--telemetry-url)     TELEMETRY_URL="${2:?--telemetry-url needs a URL}"; TELEMETRY=yes; shift 2 ;;
+	--telemetry-url=*)   TELEMETRY_URL="${1#*=}"; TELEMETRY=yes; shift ;;
+	--telemetry-token)   TELEMETRY_TOKEN="${2:?--telemetry-token needs a key}"; TELEMETRY=yes; shift 2 ;;
+	--telemetry-token=*) TELEMETRY_TOKEN="${1#*=}"; TELEMETRY=yes; shift ;;
 	-h|--help)      usage 0 ;;
 	*)              printf 'unknown option: %s\n\n' "$1" >&2; usage 2 ;;
 	esac
@@ -93,7 +116,15 @@ done
 # --- prompting (works when the script itself arrived on stdin) --------------
 
 TTY=""
-if [ "$ASSUME_YES" = 0 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+# Test by actually opening /dev/tty, not with -r/-w. In a detached process
+# (CI runner, container, systemd unit) the device node exists and passes the
+# permission tests, but the open fails because there is no controlling
+# terminal — and every prompt would then error and silently take its default.
+# The probe runs in a subshell and uses `true`, not `:`. A redirection failure
+# on a POSIX *special* builtin (`:` is one) terminates the shell outright under
+# dash — silently, and even inside an if-condition — so probing with `:` here
+# would abort the installer on exactly the machines it is meant to detect.
+if [ "$ASSUME_YES" = 0 ] && (true </dev/tty >/dev/tty) 2>/dev/null; then
 	TTY=/dev/tty
 fi
 
@@ -360,6 +391,110 @@ case ":$PATH:" in
     export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 
+# --- telemetry consent ------------------------------------------------------
+
+# Asked before client configuration, and deliberately outside the --no-configure
+# early exit: whether this machine shares hallucinated package names is a
+# separate decision from which editors get the MCP server registered.
+
+# What is configured now, so the prompt can state it and a re-run never flips
+# a previous answer silently.
+current_url=""
+if [ -f "$CONSENT_FILE" ]; then
+	current_url="$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONSENT_FILE" | head -1)"
+fi
+
+# No terminal (piped, CI, --yes) means the question cannot be put to a human,
+# so it is not answered on their behalf: leave things exactly as they are.
+[ "$TELEMETRY" = ask ] && [ -z "$TTY" ] && TELEMETRY=skip
+
+if [ "$TELEMETRY" = ask ]; then
+	cat >&2 <<-EOF
+
+	  Help improve depmesh-ai?
+
+	  When a package is REJECTed because it does not exist on its registry, that
+	  name is almost always one an AI assistant hallucinated. Sharing those names
+	  builds a live feed of slopsquat targets — so they can be tracked before
+	  attackers register them.
+
+	    sent      ecosystem, package name, timestamp, tool version
+	    not sent  username, hostname, IP-derived data, repository or project
+	              names — and nothing whatsoever about packages that do exist
+
+	  This is off unless you say yes, and you can change your mind at any time
+	  (the answer is a single file: $CONSENT_FILE).
+	EOF
+	if [ -n "$current_url" ]; then
+		printf '\n  Currently: enabled, reporting to %s\n' "$current_url" >&2
+		telemetry_default=y
+	else
+		printf '\n  Currently: disabled\n' >&2
+		telemetry_default=n
+	fi
+
+	if confirm "  Share hallucinated package names?" "$telemetry_default"; then
+		TELEMETRY=yes
+		TELEMETRY_URL="$(ask "  Send to" "${TELEMETRY_URL:-${current_url:-$DEFAULT_TELEMETRY_URL}}")"
+		[ -n "$TELEMETRY_TOKEN" ] ||
+			TELEMETRY_TOKEN="$(ask "  Ingest key, if a hosted tenant issued you one (blank for none)" "")"
+	else
+		TELEMETRY=no
+	fi
+	printf '\n' >&2
+fi
+
+case "$TELEMETRY" in
+yes)
+	TELEMETRY_URL="${TELEMETRY_URL:-$DEFAULT_TELEMETRY_URL}"
+	# Validated rather than escaped: the consent file is JSON assembled by hand
+	# below, so anything that would need an escape is rejected instead.
+	#
+	# Done with `case`, not `grep`. An empty token is legitimate, and an empty
+	# string piped to grep is zero *lines*, which never matches — so a grep
+	# check would reject the commonest valid input. `case` also rejects embedded
+	# newlines, which an anchored grep pattern would happily let through.
+	case "$TELEMETRY_URL" in
+	http://*|https://*) ;;
+	*) die "telemetry URL must be a plain http(s) URL, got: $TELEMETRY_URL" ;;
+	esac
+	case "$TELEMETRY_URL" in
+	*[!A-Za-z0-9._~:/?#@!\$\&\(\)*+,\;=%-]*)
+		die "telemetry URL contains characters that cannot appear in a URL: $TELEMETRY_URL" ;;
+	esac
+	case "$TELEMETRY_TOKEN" in
+	*[!A-Za-z0-9._-]*)
+		die "telemetry token may only contain letters, digits, dot, underscore and dash" ;;
+	esac
+
+	(umask 077 && mkdir -p "$(dirname "$CONSENT_FILE")")
+	if [ -n "$TELEMETRY_TOKEN" ]; then
+		body="{\"url\":\"$TELEMETRY_URL\",\"token\":\"$TELEMETRY_TOKEN\"}"
+	else
+		body="{\"url\":\"$TELEMETRY_URL\"}"
+	fi
+	(umask 077 && printf '%s\n' "$body" > "$CONSENT_FILE")
+	chmod 0600 "$CONSENT_FILE"
+	say "telemetry ON — reporting nonexistent-package names to $TELEMETRY_URL"
+	printf '    turn it off any time: rm %s\n' "$CONSENT_FILE" >&2
+	;;
+no)
+	if [ -f "$CONSENT_FILE" ]; then
+		rm -f "$CONSENT_FILE"
+		say "telemetry OFF — removed $CONSENT_FILE"
+	else
+		say "telemetry OFF — nothing is sent anywhere"
+	fi
+	;;
+skip)
+	if [ -n "$current_url" ]; then
+		say "telemetry unchanged — still reporting to $current_url"
+	else
+		say "telemetry OFF (not asked: no terminal). Enable with: --telemetry"
+	fi
+	;;
+esac
+
 [ "$CONFIGURE" = 1 ] || { say "done (skipped client configuration)"; exit 0; }
 
 # --- policy file ------------------------------------------------------------
@@ -589,6 +724,11 @@ done
 printf '\n%sdepmesh-ai %s installed.%s\n' "$BOLD" "$VERSION" "$OFF" >&2
 printf '  binary:  %s\n' "$BIN" >&2
 [ -n "$POLICY_FILE" ] && printf '  policy:  %s\n' "$POLICY_FILE" >&2
+if [ -f "$CONSENT_FILE" ]; then
+	printf '  telemetry: on  (%s)\n' "$CONSENT_FILE" >&2
+else
+	printf '  telemetry: off\n' >&2
+fi
 if [ -n "$SELECTED" ]; then
 	printf '  clients: %s\n' "${SELECTED# }" >&2
 fi

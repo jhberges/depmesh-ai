@@ -33,6 +33,18 @@ Accept every default and never prompt.
 
 .PARAMETER NoConfigure
 Install the binary only; do not touch any client configuration.
+
+.PARAMETER Telemetry
+Enable telemetry without asking. Off unless you ask for it.
+
+.PARAMETER NoTelemetry
+Disable telemetry without asking, removing any previously recorded consent.
+
+.PARAMETER TelemetryUrl
+Receiver endpoint. Defaults to https://depmesh.com/v1/telemetry.
+
+.PARAMETER TelemetryToken
+Per-tenant ingest key for the receiver ($env:DEPMESH_TELEMETRY_TOKEN).
 #>
 [CmdletBinding()]
 param(
@@ -41,7 +53,11 @@ param(
 	[string]$Policy,
 	[string]$Clients,
 	[switch]$Yes,
-	[switch]$NoConfigure
+	[switch]$NoConfigure,
+	[switch]$Telemetry,
+	[switch]$NoTelemetry,
+	[string]$TelemetryUrl,
+	[string]$TelemetryToken
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +71,30 @@ if (-not $InstallDir) { $InstallDir = $env:DEPMESH_INSTALL_DIR }
 if (-not $Policy)     { $Policy = $env:DEPMESH_POLICY }
 if (-not $Clients)    { $Clients = $env:DEPMESH_CLIENTS }
 if (-not $Version)    { $Version = 'latest' }
+
+# --- telemetry consent settings ---------------------------------------------
+
+if (-not $TelemetryUrl)   { $TelemetryUrl = $env:DEPMESH_TELEMETRY_URL }
+if (-not $TelemetryToken) { $TelemetryToken = $env:DEPMESH_TELEMETRY_TOKEN }
+$DefaultTelemetryUrl = 'https://depmesh.com/v1/telemetry'
+
+# Must match telemetry.ConfigPath() in the binary. That uses os.UserHomeDir(),
+# which is %USERPROFILE% on Windows — so the consent file lives under
+# ~\.config, NOT %APPDATA%. Deliberately the same relative path on every
+# platform, so installer and binary can never disagree about where it is.
+$ConsentFile = if ($env:XDG_CONFIG_HOME) {
+	Join-Path $env:XDG_CONFIG_HOME 'depmesh\telemetry.json'
+} else {
+	Join-Path $env:USERPROFILE '.config\depmesh\telemetry.json'
+}
+
+# ask | yes | no — resolved to 'skip' later when there is nobody to ask.
+$telemetryMode = 'ask'
+if ($Telemetry -or $TelemetryUrl -or $TelemetryToken) { $telemetryMode = 'yes' }
+if ($NoTelemetry) { $telemetryMode = 'no' }
+if ($Telemetry -and $NoTelemetry) {
+	Write-Host 'error: -Telemetry and -NoTelemetry are mutually exclusive' -ForegroundColor Red; exit 1
+}
 
 # Private repo, or an internal mirror of the release assets.
 $Token = if ($env:DEPMESH_GITHUB_TOKEN) { $env:DEPMESH_GITHUB_TOKEN } else { $env:GITHUB_TOKEN }
@@ -252,6 +292,108 @@ if (($userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }) -notcontains $In
 	}
 }
 
+# --- telemetry consent ------------------------------------------------------
+
+# Asked before client configuration, and deliberately above the -NoConfigure
+# early exit: whether this machine shares hallucinated package names is a
+# separate decision from which editors get the MCP server registered.
+
+# What is configured now, so the prompt can state it and a re-run never flips
+# a previous answer silently.
+$currentUrl = ''
+if (Test-Path $ConsentFile) {
+	try { $currentUrl = (Get-Content -Raw $ConsentFile | ConvertFrom-Json).url } catch { $currentUrl = '' }
+}
+
+# Nobody to ask (piped, CI, -Yes) means the question is not answered on the
+# user's behalf: leave whatever is already configured exactly as it is.
+if ($telemetryMode -eq 'ask' -and -not $Interactive) { $telemetryMode = 'skip' }
+
+if ($telemetryMode -eq 'ask') {
+	Write-Host ''
+	Write-Host '  Help improve depmesh-ai?'
+	Write-Host ''
+	Write-Host '  When a package is REJECTed because it does not exist on its registry, that'
+	Write-Host '  name is almost always one an AI assistant hallucinated. Sharing those names'
+	Write-Host '  builds a live feed of slopsquat targets — so they can be tracked before'
+	Write-Host '  attackers register them.'
+	Write-Host ''
+	Write-Host '    sent      ecosystem, package name, timestamp, tool version'
+	Write-Host '    not sent  username, hostname, IP-derived data, repository or project'
+	Write-Host '              names — and nothing whatsoever about packages that do exist'
+	Write-Host ''
+	Write-Host "  This is off unless you say yes, and you can change your mind at any time"
+	Write-Host "  (the answer is a single file: $ConsentFile)."
+	Write-Host ''
+	if ($currentUrl) {
+		Write-Host "  Currently: enabled, reporting to $currentUrl"
+		$telemetryDefault = 'y'
+	} else {
+		Write-Host '  Currently: disabled'
+		$telemetryDefault = 'n'
+	}
+
+	if (Read-Confirm '  Share hallucinated package names?' $telemetryDefault) {
+		$telemetryMode = 'yes'
+		$suggested = if ($TelemetryUrl) { $TelemetryUrl }
+		             elseif ($currentUrl) { $currentUrl }
+		             else { $DefaultTelemetryUrl }
+		$TelemetryUrl = Read-Value '  Send to' $suggested
+		if (-not $TelemetryToken) {
+			$TelemetryToken = Read-Value '  Ingest key, if a hosted tenant issued you one (blank for none)' ''
+		}
+	} else {
+		$telemetryMode = 'no'
+	}
+	Write-Host ''
+}
+
+switch ($telemetryMode) {
+'yes' {
+	if (-not $TelemetryUrl) { $TelemetryUrl = $DefaultTelemetryUrl }
+	# Validated rather than escaped: the consent file is JSON, and anything
+	# that would need an escape is rejected instead of quoted.
+	if ($TelemetryUrl -notmatch '^https?://[^\s"\\]+$') {
+		Stop-Install "telemetry URL must be a plain http(s) URL, got: $TelemetryUrl"
+	}
+	if ($TelemetryToken -and $TelemetryToken -notmatch '^[A-Za-z0-9._-]+$') {
+		Stop-Install 'telemetry token may only contain letters, digits, dot, underscore and dash'
+	}
+
+	New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ConsentFile) | Out-Null
+	$consent = [ordered]@{ url = $TelemetryUrl }
+	if ($TelemetryToken) { $consent['token'] = $TelemetryToken }
+	# -Encoding ascii: the file is read by Go's encoding/json, which rejects a
+	# UTF-8 BOM. Windows PowerShell 5.1 writes one by default with utf8.
+	$consent | ConvertTo-Json -Compress | Set-Content -Path $ConsentFile -Encoding ascii
+
+	# The file holds an ingest key. Drop inherited ACLs so only this user reads
+	# it — the closest Windows equivalent of the chmod 0600 the Unix script does.
+	try {
+		icacls $ConsentFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" *>$null
+	} catch {
+		Write-Warn "could not restrict permissions on $ConsentFile — it contains an ingest key"
+	}
+	Write-Step "telemetry ON — reporting nonexistent-package names to $TelemetryUrl"
+	Write-Host "    turn it off any time: Remove-Item '$ConsentFile'"
+}
+'no' {
+	if (Test-Path $ConsentFile) {
+		Remove-Item -Force $ConsentFile
+		Write-Step "telemetry OFF — removed $ConsentFile"
+	} else {
+		Write-Step 'telemetry OFF — nothing is sent anywhere'
+	}
+}
+'skip' {
+	if ($currentUrl) {
+		Write-Step "telemetry unchanged — still reporting to $currentUrl"
+	} else {
+		Write-Step 'telemetry OFF (not asked: not interactive). Enable with: -Telemetry'
+	}
+}
+}
+
 if ($NoConfigure) {
 	Write-Step 'done (skipped client configuration)'
 	exit 0
@@ -414,6 +556,11 @@ Write-Host ''
 Write-Host "depmesh-ai $Version installed." -ForegroundColor Green
 Write-Host "  binary:  $Bin"
 if ($Policy) { Write-Host "  policy:  $Policy" }
+if (Test-Path $ConsentFile) {
+	Write-Host "  telemetry: on  ($ConsentFile)"
+} else {
+	Write-Host '  telemetry: off'
+}
 if ($selected) { Write-Host "  clients: $($selected -join ', ')" }
 if ($failed) { Write-Host "  needs manual setup: $($failed -join ', ')" }
 Write-Host ''

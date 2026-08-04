@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual re-run. Needed more often than it looks: a run that fails to *start*
+  # — a blocked action, a policy change — cannot be re-run from the UI, so
+  # without this the only way to retry is to push another commit.
+  workflow_dispatch:
 
 permissions:
   contents: read

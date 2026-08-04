@@ -1,0 +1,14 @@
+# Code owners for depmesh-ai.
+#
+# Ownership is repository-wide: one maintainer, no sub-team boundaries worth
+# drawing yet. Split this by path only when someone else owns an area in
+# practice, not in anticipation.
+#
+# Note on branch protection: naming an owner here does NOT let that owner
+# approve their own pull requests — GitHub forbids self-approval regardless of
+# CODEOWNERS. With "require code owner reviews" and a minimum of 1 approval, a
+# solo maintainer cannot satisfy the requirement on their own PRs at all. To
+# merge unaided, set the required approval count to 0 (pull requests and status
+# checks still apply) or rely on an admin bypass.
+
+* @jhberges

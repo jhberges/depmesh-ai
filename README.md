@@ -299,3 +299,17 @@ over and why the architecture changed.
 go test ./...
 go vet ./...
 ```
+
+## License
+
+[Apache License 2.0](LICENSE) — Copyright 2026 JHB Holdings AS.
+
+Chosen so this tool passes its own gate. `depmesh-ai` scores an undeclared
+license at **−15** ("legal risk for adoption") and copyleft at **−10**, and the
+example policy in [docs/example.policy.json](docs/example.policy.json) sets
+`require_declared: true` while denying AGPL and SSPL. A dependency-vetting tool
+that its own default policy would reject is not one you should trust.
+
+Apache-2.0 over MIT for two clauses that matter here: §3 grants patent rights
+explicitly, and §6 withholds trademark rights — "DepMesh" is a commercial
+brand, and the licence covers the code, not the name.

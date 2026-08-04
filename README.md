@@ -302,7 +302,7 @@ go vet ./...
 
 ## License
 
-[Apache License 2.0](LICENSE) — Copyright 2026 JHB Holdings AS.
+[Apache License 2.0](LICENSE) — Copyright 2026 JHB Holding AS.
 
 Chosen so this tool passes its own gate. `depmesh-ai` scores an undeclared
 license at **−15** ("legal risk for adoption") and copyleft at **−10**, and the

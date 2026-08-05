@@ -22,7 +22,7 @@ var Version = "0.2.0-dev"
 
 type Gate struct {
 	Policy    *policy.Policy
-	AuditLog  string
+	Audit     audit.Log
 	Telemetry telemetry.Config
 
 	// Upstream, when set, is the base URL of a central `depmesh-ai api`
@@ -70,14 +70,26 @@ func New(policyPath, auditOverride, upstreamURL string) (*Gate, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Gate{Policy: p, Upstream: upstreamURL}
+	g := &Gate{
+		Policy:   p,
+		Upstream: upstreamURL,
+		Audit:    audit.Log{MaxSize: audit.DefaultMaxSize, Keep: audit.DefaultKeep},
+	}
 	var policyTelemetry string
 	if p != nil {
-		g.AuditLog = p.AuditLog
+		g.Audit.Path = p.AuditLog
 		policyTelemetry = p.TelemetryURL
+		// Pointers, so that an explicit 0 ("never rotate") is distinguishable
+		// from an absent field ("use the default").
+		if p.AuditMaxSize != nil {
+			g.Audit.MaxSize = *p.AuditMaxSize
+		}
+		if p.AuditKeep != nil {
+			g.Audit.Keep = *p.AuditKeep
+		}
 	}
 	if auditOverride != "" {
-		g.AuditLog = auditOverride
+		g.Audit.Path = auditOverride
 	}
 	g.Telemetry = telemetry.Resolve(policyTelemetry)
 	return g, nil
@@ -106,7 +118,7 @@ func (g *Gate) Vet(caller audit.Caller, ecosystem, name string, enrich bool) (*O
 		outcome.Policy = &result
 	}
 	telemetry.ReportNonexistent(g.Telemetry, Version, verdict)
-	if err := audit.Write(g.AuditLog, caller, Version, verdict, outcome.Policy); err != nil {
+	if err := g.Audit.Write(caller, Version, verdict, outcome.Policy); err != nil {
 		return outcome, err
 	}
 	return outcome, nil

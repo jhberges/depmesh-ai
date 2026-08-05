@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jhberges/depmesh-ai/internal/bytesize"
 	"github.com/jhberges/depmesh-ai/internal/vet"
 )
 
@@ -55,6 +56,12 @@ type Policy struct {
 	Exceptions []Exception `json:"exceptions,omitempty"`
 	// AuditLog is a path to append JSONL decision records to (see audit pkg).
 	AuditLog string `json:"audit_log,omitempty"`
+	// AuditMaxSize rotates the audit log once a record would carry it past
+	// this size, written either as bytes or as "100MB". Absent means the
+	// audit package's default; an explicit 0 means never rotate.
+	AuditMaxSize *bytesize.Size `json:"audit_max_size,omitempty"`
+	// AuditKeep is how many rotated files to retain (absent = default).
+	AuditKeep *int `json:"audit_keep,omitempty"`
 	// TelemetryURL enables opt-in slopsquat telemetry (see telemetry pkg).
 	// Absent/empty = telemetry fully disabled.
 	TelemetryURL string `json:"telemetry_url,omitempty"`

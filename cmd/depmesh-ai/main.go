@@ -14,6 +14,7 @@ import (
 
 	"github.com/jhberges/depmesh-ai/internal/api"
 	"github.com/jhberges/depmesh-ai/internal/audit"
+	"github.com/jhberges/depmesh-ai/internal/bytesize"
 	"github.com/jhberges/depmesh-ai/internal/gate"
 	"github.com/jhberges/depmesh-ai/internal/mcp"
 	"github.com/jhberges/depmesh-ai/internal/sources"
@@ -25,6 +26,9 @@ func usage() {
   depmesh-ai vet [--json] [--no-enrich] [--policy FILE] [--audit-log FILE] [--upstream URL] <ecosystem> <package>
   depmesh-ai serve [--policy FILE] [--audit-log FILE] [--upstream URL]
   depmesh-ai api [--listen ADDR] [--policy FILE] [--audit-log FILE]
+
+audit rotation (any surface): --audit-max-size 100MB, --audit-keep 5.
+0 means never rotate; both default from the policy file when set there.
 
 ecosystems: npm | pypi | maven (maven packages: groupId:artifactId)
 
@@ -56,10 +60,26 @@ func main() {
 	}
 }
 
-func gateFlags(flags *flag.FlagSet) (policyPath, auditLog *string) {
-	policyPath = flags.String("policy", "", "policy file (default: $DEPMESH_POLICY or ./depmesh.policy.json)")
-	auditLog = flags.String("audit-log", "", "append JSONL decision records to this file (overrides policy)")
-	return
+// gateOptions are the flags every surface shares. The audit rotation flags
+// are strings and a sentinel rather than plain values so that "not given"
+// stays distinguishable from an explicit 0, which means "never rotate".
+type gateOptions struct {
+	policyPath *string
+	auditLog   *string
+	auditMax   *string
+	auditKeep  *int
+}
+
+const auditKeepUnset = -1
+
+func gateFlags(flags *flag.FlagSet) gateOptions {
+	return gateOptions{
+		policyPath: flags.String("policy", "", "policy file (default: $DEPMESH_POLICY or ./depmesh.policy.json)"),
+		auditLog:   flags.String("audit-log", "", "append JSONL decision records to this file (overrides policy)"),
+		auditMax: flags.String("audit-max-size", "",
+			"rotate the audit log past this size, e.g. 100MB (0 = never rotate)"),
+		auditKeep: flags.Int("audit-keep", auditKeepUnset, "how many rotated audit files to retain"),
+	}
 }
 
 func upstreamFlag(flags *flag.FlagSet) *string {
@@ -78,11 +98,26 @@ func resolveUpstream(flagValue string) string {
 	return os.Getenv("DEPMESH_UPSTREAM")
 }
 
-func buildGate(policyPath, auditLog, upstreamURL string) *gate.Gate {
-	g, err := gate.New(policyPath, auditLog, upstreamURL)
+func buildGate(options gateOptions, upstreamURL string) *gate.Gate {
+	g, err := gate.New(*options.policyPath, *options.auditLog, upstreamURL)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
+	}
+	if *options.auditMax != "" {
+		size, err := bytesize.Parse(*options.auditMax)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error: --audit-max-size:", err)
+			os.Exit(2)
+		}
+		g.Audit.MaxSize = size
+	}
+	if *options.auditKeep != auditKeepUnset {
+		if *options.auditKeep < 0 {
+			fmt.Fprintln(os.Stderr, "error: --audit-keep cannot be negative")
+			os.Exit(2)
+		}
+		g.Audit.Keep = *options.auditKeep
 	}
 	// Delegating means the far side decides and records. Saying so beats
 	// letting someone believe a local policy file is being enforced.
@@ -90,7 +125,7 @@ func buildGate(policyPath, auditLog, upstreamURL string) *gate.Gate {
 		if g.Policy != nil {
 			fmt.Fprintln(os.Stderr, "note: --upstream is set; the local policy file is ignored, the gate's policy applies")
 		}
-		if g.AuditLog != "" {
+		if g.Audit.Path != "" {
 			fmt.Fprintln(os.Stderr, "note: --upstream is set; decisions are audited by the gate, not locally")
 		}
 	}
@@ -101,13 +136,13 @@ func runVet(args []string) int {
 	flags := flag.NewFlagSet("vet", flag.ExitOnError)
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	noEnrich := flags.Bool("no-enrich", false, "skip deps.dev enrichment (advisories)")
-	policyPath, auditLog := gateFlags(flags)
+	options := gateFlags(flags)
 	upstreamURL := upstreamFlag(flags)
 	_ = flags.Parse(args)
 	if flags.NArg() != 2 {
 		usage()
 	}
-	g := buildGate(*policyPath, *auditLog, resolveUpstream(*upstreamURL))
+	g := buildGate(options, resolveUpstream(*upstreamURL))
 
 	outcome, err := g.Vet(audit.Local("cli"), flags.Arg(0), flags.Arg(1), !*noEnrich)
 	var unavailable *sources.UnavailableError
@@ -137,10 +172,10 @@ func runVet(args []string) int {
 
 func runServe(args []string) int {
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
-	policyPath, auditLog := gateFlags(flags)
+	options := gateFlags(flags)
 	upstreamURL := upstreamFlag(flags)
 	_ = flags.Parse(args)
-	g := buildGate(*policyPath, *auditLog, resolveUpstream(*upstreamURL))
+	g := buildGate(options, resolveUpstream(*upstreamURL))
 	if err := mcp.Serve(g, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
@@ -151,11 +186,11 @@ func runServe(args []string) int {
 func runAPI(args []string) int {
 	flags := flag.NewFlagSet("api", flag.ExitOnError)
 	listen := flags.String("listen", ":8385", "listen address")
-	policyPath, auditLog := gateFlags(flags)
+	options := gateFlags(flags)
 	_ = flags.Parse(args)
-	g := buildGate(*policyPath, *auditLog, "")
+	g := buildGate(options, "")
 	fmt.Fprintf(os.Stderr, "depmesh-ai %s serving on %s (policy: %v, audit: %q)\n",
-		gate.Version, *listen, g.Policy != nil, g.AuditLog)
+		gate.Version, *listen, g.Policy != nil, g.Audit.Path)
 	if err := api.ListenAndServe(*listen, g); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2

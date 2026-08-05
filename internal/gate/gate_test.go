@@ -53,10 +53,10 @@ func registryFacing(t *testing.T) (string, *seen) {
 // survive the middle, which one hop cannot.
 func TestDelegatedDecisionAndIdentitySurviveTheHop(t *testing.T) {
 	origin, record := registryFacing(t)
-	middle := httptest.NewServer(api.Handler(&gate.Gate{Upstream: origin}))
+	middle := httptest.NewServer(api.Handler(&gate.Gate{Upstream: gate.Upstream{URL: origin}}, ""))
 	defer middle.Close()
 
-	developer := &gate.Gate{Upstream: middle.URL}
+	developer := &gate.Gate{Upstream: gate.Upstream{URL: middle.URL}}
 	outcome, err := developer.Vet(
 		audit.Caller{Surface: "mcp", Actor: "alice", Hostname: "laptop"},
 		"npm", "@types/node", true)
@@ -92,7 +92,7 @@ func TestLocalPolicyIsNotAppliedWhenDelegating(t *testing.T) {
 	origin, _ := registryFacing(t)
 
 	developer := &gate.Gate{
-		Upstream: origin,
+		Upstream: gate.Upstream{URL: origin},
 		// Would block everything if it were consulted.
 		Policy: &policy.Policy{MinScore: 100, Licenses: policy.Licenses{RequireDeclared: true}},
 	}
@@ -113,7 +113,7 @@ func TestGarbageResponseIsAnError(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(body))
 		}))
-		developer := &gate.Gate{Upstream: server.URL}
+		developer := &gate.Gate{Upstream: gate.Upstream{URL: server.URL}}
 		outcome, err := developer.Vet(audit.Local("cli"), "npm", "left-pad", true)
 		if err == nil {
 			t.Fatalf("body %q returned outcome %+v, want error", body, outcome)
@@ -123,7 +123,7 @@ func TestGarbageResponseIsAnError(t *testing.T) {
 }
 
 func TestNewRejectsBadUpstream(t *testing.T) {
-	if _, err := gate.New("", "", "depmesh.lan:8385"); err == nil {
+	if _, err := gate.New("", "", gate.Upstream{URL: "depmesh.lan:8385"}); err == nil {
 		t.Fatal("a scheme-less upstream should be rejected, not guessed at")
 	}
 }

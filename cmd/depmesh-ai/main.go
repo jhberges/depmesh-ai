@@ -11,8 +11,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jhberges/depmesh-ai/internal/api"
+	"github.com/jhberges/depmesh-ai/internal/apikey"
 	"github.com/jhberges/depmesh-ai/internal/audit"
 	"github.com/jhberges/depmesh-ai/internal/bytesize"
 	"github.com/jhberges/depmesh-ai/internal/gate"
@@ -24,8 +26,8 @@ import (
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   depmesh-ai vet [--json] [--no-enrich] [--policy FILE] [--audit-log FILE] [--upstream URL] <ecosystem> <package>
-  depmesh-ai serve [--policy FILE] [--audit-log FILE] [--upstream URL]
-  depmesh-ai api [--listen ADDR] [--policy FILE] [--audit-log FILE]
+  depmesh-ai serve [--policy FILE] [--audit-log FILE] [--upstream URL] [--upstream-key KEY]
+  depmesh-ai api [--listen ADDR] [--policy FILE] [--audit-log FILE] [--api-key KEY|off]
 
 audit rotation (any surface): --audit-max-size 100MB, --audit-keep 5.
 0 means never rotate; both default from the policy file when set there.
@@ -38,7 +40,12 @@ policy is auto-discovered from ./depmesh.policy.json or $DEPMESH_POLICY;
 --upstream (or $DEPMESH_UPSTREAM) delegates the decision to a central
 "depmesh-ai api" instance, so this machine needs no registry access and the
 gate's policy and audit log apply. It never falls back to direct registry
-access when that gate is unreachable.`)
+access when that gate is unreachable. Pair it with --upstream-key (or
+$DEPMESH_UPSTREAM_KEY) for the key that gate requires.
+
+"api" requires an API key. It reads --api-key, then $DEPMESH_API_KEY, and
+generates one when neither is set, printing it on startup. --api-key off
+serves without authentication.`)
 	os.Exit(2)
 }
 
@@ -82,24 +89,59 @@ func gateFlags(flags *flag.FlagSet) gateOptions {
 	}
 }
 
-func upstreamFlag(flags *flag.FlagSet) *string {
-	// Backquotes name the placeholder in flag's usage output — hence `URL`.
-	return flags.String("upstream", "",
-		"delegate to a central depmesh-ai api instance at this `URL` instead of contacting registries (default: $DEPMESH_UPSTREAM)")
+type upstreamOptions struct {
+	url *string
+	key *string
 }
 
-// resolveUpstream prefers the flag, then the environment. Only the two
-// developer-facing surfaces call it: `api` is the far end of the delegation
-// and must never chain onward.
-func resolveUpstream(flagValue string) string {
-	if flagValue != "" {
-		return flagValue
+func upstreamFlags(flags *flag.FlagSet) upstreamOptions {
+	return upstreamOptions{
+		// Backquotes name the placeholder in flag's usage output — hence `URL`.
+		url: flags.String("upstream", "",
+			"delegate to a central depmesh-ai api instance at this `URL` instead of contacting registries (default: $DEPMESH_UPSTREAM)"),
+		key: flags.String("upstream-key", "",
+			"API `key` that gate requires (default: $DEPMESH_UPSTREAM_KEY)"),
 	}
-	return os.Getenv("DEPMESH_UPSTREAM")
 }
 
-func buildGate(options gateOptions, upstreamURL string) *gate.Gate {
-	g, err := gate.New(*options.policyPath, *options.auditLog, upstreamURL)
+// resolve prefers flags, then the environment. Only the two developer-facing
+// surfaces call it: `api` is the far end of the delegation and must never
+// chain onward.
+func (o upstreamOptions) resolve() gate.Upstream {
+	up := gate.Upstream{URL: *o.url, Key: *o.key}
+	if up.URL == "" {
+		up.URL = os.Getenv("DEPMESH_UPSTREAM")
+	}
+	if up.Key == "" {
+		up.Key = os.Getenv(apikey.UpstreamEnvVar)
+	}
+	return up
+}
+
+// resolveAPIKey decides what the served gate requires. Absent configuration
+// generates one rather than serving open: the audit log is a write path to
+// disk, and an unauthenticated write path is a denial-of-service waiting to
+// be found. Turning it off has to be said out loud.
+func resolveAPIKey(flagValue string) (key string, generated bool) {
+	if flagValue == "" {
+		flagValue = os.Getenv(apikey.EnvVar)
+	}
+	if strings.EqualFold(strings.TrimSpace(flagValue), apikey.Off) {
+		return "", false
+	}
+	if flagValue != "" {
+		return flagValue, false
+	}
+	generatedKey, err := apikey.Generate()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
+	return generatedKey, true
+}
+
+func buildGate(options gateOptions, up gate.Upstream) *gate.Gate {
+	g, err := gate.New(*options.policyPath, *options.auditLog, up)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
@@ -121,7 +163,7 @@ func buildGate(options gateOptions, upstreamURL string) *gate.Gate {
 	}
 	// Delegating means the far side decides and records. Saying so beats
 	// letting someone believe a local policy file is being enforced.
-	if g.Upstream != "" {
+	if g.Upstream.URL != "" {
 		if g.Policy != nil {
 			fmt.Fprintln(os.Stderr, "note: --upstream is set; the local policy file is ignored, the gate's policy applies")
 		}
@@ -137,12 +179,12 @@ func runVet(args []string) int {
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	noEnrich := flags.Bool("no-enrich", false, "skip deps.dev enrichment (advisories)")
 	options := gateFlags(flags)
-	upstreamURL := upstreamFlag(flags)
+	up := upstreamFlags(flags)
 	_ = flags.Parse(args)
 	if flags.NArg() != 2 {
 		usage()
 	}
-	g := buildGate(options, resolveUpstream(*upstreamURL))
+	g := buildGate(options, up.resolve())
 
 	outcome, err := g.Vet(audit.Local("cli"), flags.Arg(0), flags.Arg(1), !*noEnrich)
 	var unavailable *sources.UnavailableError
@@ -173,9 +215,9 @@ func runVet(args []string) int {
 func runServe(args []string) int {
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
 	options := gateFlags(flags)
-	upstreamURL := upstreamFlag(flags)
+	up := upstreamFlags(flags)
 	_ = flags.Parse(args)
-	g := buildGate(options, resolveUpstream(*upstreamURL))
+	g := buildGate(options, up.resolve())
 	if err := mcp.Serve(g, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
@@ -186,12 +228,29 @@ func runServe(args []string) int {
 func runAPI(args []string) int {
 	flags := flag.NewFlagSet("api", flag.ExitOnError)
 	listen := flags.String("listen", ":8385", "listen address")
+	apiKeyFlag := flags.String("api-key", "",
+		"API `key` clients must present, or \"off\" to serve without one (default: $DEPMESH_API_KEY, else generated)")
 	options := gateFlags(flags)
 	_ = flags.Parse(args)
-	g := buildGate(options, "")
+	g := buildGate(options, gate.Upstream{})
+	key, generated := resolveAPIKey(*apiKeyFlag)
+
 	fmt.Fprintf(os.Stderr, "depmesh-ai %s serving on %s (policy: %v, audit: %q)\n",
 		gate.Version, *listen, g.Policy != nil, g.Audit.Path)
-	if err := api.ListenAndServe(*listen, g); err != nil {
+	switch {
+	case generated:
+		// Printed once, to stderr, and never again: a restart makes a new one,
+		// which is why anything long-lived should set the key explicitly.
+		fmt.Fprintf(os.Stderr, "API key (generated for this run): %s\n", key)
+		fmt.Fprintf(os.Stderr, "  clients: depmesh-ai serve --upstream http://HOST%s --upstream-key %s\n", *listen, key)
+		fmt.Fprintf(os.Stderr, "  set $%s to keep it stable across restarts, or --api-key off to disable auth\n",
+			apikey.EnvVar)
+	case key == "":
+		fmt.Fprintln(os.Stderr, "WARNING: --api-key off — anyone who can reach this port can query it and grow its audit log")
+	default:
+		fmt.Fprintln(os.Stderr, "API key: configured")
+	}
+	if err := api.ListenAndServe(*listen, g, key); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}

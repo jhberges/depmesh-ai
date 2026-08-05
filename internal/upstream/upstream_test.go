@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -169,5 +170,49 @@ func TestNormalize(t *testing.T) {
 		if got != testCase.want {
 			t.Fatalf("Normalize(%q) = %q, want %q", testCase.in, got, testCase.want)
 		}
+	}
+}
+
+func TestKeyIsSentAsBearer(t *testing.T) {
+	server, rec := stub(t, http.StatusOK, outcomeJSON)
+
+	if _, err := Vet(Request{Base: server.URL, Key: "dmk_secret",
+		Ecosystem: "npm", Package: "left-pad"}); err != nil {
+		t.Fatalf("vet: %v", err)
+	}
+	if got := rec.get(t).Header.Get("Authorization"); got != "Bearer dmk_secret" {
+		t.Fatalf("Authorization = %q", got)
+	}
+}
+
+func TestNoKeySendsNoAuthorizationHeader(t *testing.T) {
+	server, rec := stub(t, http.StatusOK, outcomeJSON)
+
+	if _, err := Vet(Request{Base: server.URL, Ecosystem: "npm", Package: "left-pad"}); err != nil {
+		t.Fatalf("vet: %v", err)
+	}
+	if got := rec.get(t).Header.Get("Authorization"); got != "" {
+		t.Fatalf("sent Authorization %q with no key configured", got)
+	}
+}
+
+// A rejected key is a configuration mistake, and the message has to say so —
+// otherwise every vet fails with no hint about which knob to turn.
+func TestRejectedKeySaysWhatToFix(t *testing.T) {
+	server, _ := stub(t, http.StatusUnauthorized, `{"error":"missing or invalid API key"}`)
+
+	_, err := Vet(Request{Base: server.URL, Key: "dmk_wrong", Ecosystem: "npm", Package: "left-pad"})
+	if err == nil {
+		t.Fatal("401 was not an error")
+	}
+	for _, want := range []string{"API key", "--upstream-key", "DEPMESH_UPSTREAM_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not mention %q", err, want)
+		}
+	}
+	// It must not masquerade as a transient outage — retrying will not help.
+	var unavailable *sources.UnavailableError
+	if errors.As(err, &unavailable) {
+		t.Fatal("a rejected key should not look like an unreachable gate")
 	}
 }

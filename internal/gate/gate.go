@@ -25,10 +25,16 @@ type Gate struct {
 	Audit     audit.Log
 	Telemetry telemetry.Config
 
-	// Upstream, when set, is the base URL of a central `depmesh-ai api`
+	// Upstream, when its URL is set, names a central `depmesh-ai api`
 	// instance that decides instead of this process. Local policy, audit,
 	// and telemetry are then the gate's business, not ours — see Vet.
-	Upstream string
+	Upstream Upstream
+}
+
+// Upstream is a central gate to delegate to, and the key it demands.
+type Upstream struct {
+	URL string
+	Key string
 }
 
 // Outcome is a verdict plus the policy decision about it. Policy is nil when
@@ -58,13 +64,13 @@ func (o *Outcome) JSON() string {
 // this process into delegating mode; resolving that from configuration is
 // the caller's job, so a serving gate can never be talked into chaining to
 // itself by an environment variable meant for developer machines.
-func New(policyPath, auditOverride, upstreamURL string) (*Gate, error) {
-	if upstreamURL != "" {
-		normalized, err := upstream.Normalize(upstreamURL)
+func New(policyPath, auditOverride string, up Upstream) (*Gate, error) {
+	if up.URL != "" {
+		normalized, err := upstream.Normalize(up.URL)
 		if err != nil {
 			return nil, err
 		}
-		upstreamURL = normalized
+		up.URL = normalized
 	}
 	p, err := policy.Load(policyPath)
 	if err != nil {
@@ -72,7 +78,7 @@ func New(policyPath, auditOverride, upstreamURL string) (*Gate, error) {
 	}
 	g := &Gate{
 		Policy:   p,
-		Upstream: upstreamURL,
+		Upstream: up,
 		Audit:    audit.Log{MaxSize: audit.DefaultMaxSize, Keep: audit.DefaultKeep},
 	}
 	var policyTelemetry string
@@ -105,7 +111,7 @@ func New(policyPath, auditOverride, upstreamURL string) (*Gate, error) {
 // would judge the same package twice against two files; reporting telemetry
 // on both ends would count one hallucination twice.
 func (g *Gate) Vet(caller audit.Caller, ecosystem, name string, enrich bool) (*Outcome, error) {
-	if g.Upstream != "" {
+	if g.Upstream.URL != "" {
 		return g.vetUpstream(caller, ecosystem, name, enrich)
 	}
 	verdict, err := vet.Vet(ecosystem, name, enrich)
@@ -127,7 +133,8 @@ func (g *Gate) Vet(caller audit.Caller, ecosystem, name string, enrich bool) (*O
 func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name string, enrich bool) (*Outcome, error) {
 	caller = caller.Resolve()
 	body, err := upstream.Vet(upstream.Request{
-		Base:      g.Upstream,
+		Base:      g.Upstream.URL,
+		Key:       g.Upstream.Key,
 		Surface:   caller.Surface,
 		Actor:     caller.Actor,
 		Hostname:  caller.Hostname,
@@ -140,10 +147,10 @@ func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name string, enrich b
 	}
 	var outcome Outcome
 	if err := json.Unmarshal(body, &outcome); err != nil {
-		return nil, &sources.UnavailableError{URL: g.Upstream, Err: fmt.Errorf("invalid JSON: %w", err)}
+		return nil, &sources.UnavailableError{URL: g.Upstream.URL, Err: fmt.Errorf("invalid JSON: %w", err)}
 	}
 	if outcome.Verdict == nil {
-		return nil, &sources.UnavailableError{URL: g.Upstream, Err: fmt.Errorf("response carried no verdict")}
+		return nil, &sources.UnavailableError{URL: g.Upstream.URL, Err: fmt.Errorf("response carried no verdict")}
 	}
 	return &outcome, nil
 }

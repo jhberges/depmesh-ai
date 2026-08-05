@@ -238,8 +238,47 @@ directly, run one instance inside the network boundary:
 depmesh-ai api --listen :8385 --policy /etc/depmesh/policy.json
 # GET /v1/vet/{ecosystem}/{package}  → 200 allowed | 409 blocked | 502 registry unreachable
 # GET /healthz
-curl localhost:8385/v1/vet/npm/express
+curl -H "Authorization: Bearer $KEY" localhost:8385/v1/vet/npm/express
 ```
+
+### The API key
+
+`/v1/vet` requires a key. Every answered request appends an audit record, and
+a failed audit write withholds the decision — so an open port is not merely
+readable, it is a way to fill a disk and take the gate down with it. The key
+is checked before the request reaches the registry, the policy engine, or the
+audit log.
+
+Three ways to set it, in order:
+
+| Source | Use |
+|---|---|
+| `--api-key KEY` | convenient, but visible to every process on the host via `ps` |
+| `$DEPMESH_API_KEY` | what a service manager or container should set |
+| *neither* | one is generated and printed on startup |
+
+```
+depmesh-ai 0.2.0-dev serving on :8385 (policy: true, audit: "/var/log/depmesh/decisions.jsonl")
+API key (generated for this run): dmk_1s4Xq…
+  clients: depmesh-ai serve --upstream http://HOST:8385 --upstream-key dmk_1s4Xq…
+  set $DEPMESH_API_KEY to keep it stable across restarts, or --api-key off to disable auth
+```
+
+A generated key is new on every restart, which breaks every client that had
+the old one — fine for a quick trial, not for anything long-lived. Set the key
+explicitly for that. `--api-key off` serves without authentication and says so
+loudly on startup; it is the only way to get the old open behaviour back.
+
+Clients pass it with `--upstream-key` or `$DEPMESH_UPSTREAM_KEY`:
+
+```bash
+DEPMESH_UPSTREAM_KEY=dmk_… depmesh-ai serve --upstream https://depmesh.internal:8385
+```
+
+Keys are compared in constant time, and `/healthz` stays open so load
+balancers and container probes keep working. The key authenticates; it does
+not encrypt — put TLS in front (or a reverse proxy that terminates it) before
+this crosses anything you don't trust.
 
 Package paths may contain slashes and colons (`/v1/vet/npm/@types/node`,
 `/v1/vet/maven/org.apache.commons:commons-lang3`).
@@ -261,7 +300,8 @@ depmesh-ai vet   --upstream https://depmesh.internal:8385 npm express
   "mcpServers": {
     "depmesh": {
       "command": "/usr/local/bin/depmesh-ai",
-      "args": ["serve", "--upstream", "https://depmesh.internal:8385"]
+      "args": ["serve", "--upstream", "https://depmesh.internal:8385"],
+      "env": { "DEPMESH_UPSTREAM_KEY": "dmk_..." }
     }
   }
 }
@@ -291,11 +331,9 @@ What moves to the gate, and what that means:
   gate is down: the vet fails as "unknown", exactly like an unreachable
   registry, and never as approval.
 
-Two things this does not do yet. The API has **no authentication** — put it on
-a trusted network, or behind a reverse proxy that terminates mTLS; anyone who
-can reach it can ask it questions and write client-asserted identity into its
-audit log. And the installers have no `--upstream` flag yet, so org-wide
-rollout means writing the `args` above into the client configs yourself.
+One thing this does not do yet: the installers have no `--upstream` flag, so
+org-wide rollout means writing the `args` above into the client configs
+yourself.
 
 ## Telemetry (opt-in, off by default)
 

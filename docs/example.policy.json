@@ -15,5 +15,7 @@
       "expires": "2027-06-30"
     }
   ],
-  "audit_log": "depmesh-decisions.jsonl"
+  "audit_log": "depmesh-decisions.jsonl",
+  "audit_max_size": "100MB",
+  "audit_keep": 5
 }

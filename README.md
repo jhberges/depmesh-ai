@@ -203,6 +203,32 @@ surface, package, verdict, score, policy result, degraded sources. Ready for
 Splunk/ELK ingestion; if the audit write fails, the decision is withheld
 (fail closed).
 
+The log is **rotated by size**, because a decision log grows with traffic and
+a served instance has no say in how much traffic it gets — and a full disk
+fails every vet closed, turning a flood into an outage:
+
+```json
+{ "audit_log": "/var/log/depmesh/decisions.jsonl",
+  "audit_max_size": "100MB",
+  "audit_keep": 5 }
+```
+
+Those are the defaults, so rotation is on whether or not you configure it;
+`--audit-max-size` / `--audit-keep` override per invocation, and either can be
+written as a byte count or as `100MB` (units are binary — `KB` is 1024).
+Set `audit_max_size` to `0` to never rotate. Rotated files are named after the
+time they were closed (`decisions.jsonl.20260805T153000.000000000Z`), and the
+oldest beyond `audit_keep` are deleted.
+
+Timestamps rather than the usual `.1`/`.2`/`.3` shuffle because several
+processes routinely share one audit file — an MCP server and a CLI on the same
+machine, or a gate that was restarted. Numbered rotation has them renaming
+onto each other's destinations and losing a file; a stamped name collides with
+nothing, so a concurrent rotation costs an extra small file and no records. A
+rotation that fails is reported like any other audit failure and withholds the
+decision: quietly outgrowing a configured bound is the outcome the bound
+exists to prevent.
+
 ## HTTP API (self-hosted, inside your network)
 
 For organizations where developer machines shouldn't talk to registries

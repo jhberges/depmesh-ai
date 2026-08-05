@@ -479,7 +479,14 @@ yes)
 	fi
 	(umask 077 && printf '%s\n' "$body" > "$CONSENT_FILE")
 	chmod 0600 "$CONSENT_FILE"
-	say "telemetry ON — reporting nonexistent-package names to $TELEMETRY_URL"
+	# Say which of the two it is: anonymous reports land in the shared feed and
+	# in nobody's dashboard, which is the difference people are surprised by.
+	if [ -n "${TELEMETRY_TOKEN:-}" ]; then
+		say "telemetry ON — reporting nonexistent-package names to $TELEMETRY_URL, attributed to your tenant"
+	else
+		say "telemetry ON — reporting nonexistent-package names to $TELEMETRY_URL, anonymously"
+		say "    (no ingest key: reports feed the shared slopsquat list, not a tenant dashboard)"
+	fi
 	printf '    turn it off any time: rm %s\n' "$CONSENT_FILE" >&2
 	;;
 no)

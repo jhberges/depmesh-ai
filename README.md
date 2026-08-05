@@ -325,11 +325,30 @@ started by an agent that has no shell environment of its own. `$XDG_CONFIG_HOME`
 is honoured; to opt out again, `rm` the file (or re-run the installer with
 `--no-telemetry`).
 
-Authenticate to a hosted receiver with a per-tenant ingest key — in
-`$DEPMESH_TELEMETRY_TOKEN`, or as `"token"` in that file — sent as a bearer
-header and kept out of the version-controlled policy file. A stored key is
-only ever sent to the endpoint stored alongside it: if policy or environment
-redirects telemetry elsewhere, the key stays behind.
+### With a key, or without
+
+An ingest key is optional, and the difference is only *attribution*:
+
+| | Where the report goes |
+|---|---|
+| **No key** | kept anonymously; it feeds the aggregate slopsquat list and appears in no organization's dashboard |
+| **Key** | attributed to your tenant, so it shows up in your console alongside your own numbers |
+
+Anonymous reporting is deliberate, not a fallback. A hallucinated package name
+is worth the same whoever saw it, and a feed that only accepted paying tenants'
+observations would be a worse feed for all of them.
+
+The one thing that is *not* accepted is a key the receiver doesn't recognise:
+that is a 401 rather than a silent demotion to anonymous, because quietly
+filing a typo'd key under "anonymous" would leave you staring at an empty
+dashboard with no way to tell why. When that happens, the tool now says so on
+stderr rather than dropping reports in silence — the vet result is unaffected
+either way.
+
+Pass a key in `$DEPMESH_TELEMETRY_TOKEN`, or as `"token"` in the consent file,
+sent as a bearer header and kept out of the version-controlled policy file. A
+stored key is only ever sent to the endpoint stored alongside it: if policy or
+environment redirects telemetry elsewhere, the key stays behind.
 
 ### Where reports go
 

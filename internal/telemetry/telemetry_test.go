@@ -1,12 +1,14 @@
 package telemetry
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,4 +182,38 @@ func TestReportIsLimitedToNonexistenceRejects(t *testing.T) {
 		License:   "MIT",
 	}, today)
 	ReportNonexistent(Config{URL: server.URL}, "v1.2.3", healthy)
+}
+
+// A receiver that refuses the key must say so somewhere. Silence here is how
+// a misconfigured install looks identical to a working one, forever.
+func TestRejectedKeyIsReported(t *testing.T) {
+	cases := []struct {
+		status   int
+		wantWarn bool
+	}{
+		{202, false},
+		{401, true},
+		{403, true},
+		{500, false}, // transient: not worth a line on every vet
+	}
+	for _, testCase := range cases {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(testCase.status)
+		}))
+
+		var warnings bytes.Buffer
+		original := warnTo
+		warnTo = &warnings
+		ReportNonexistent(Config{URL: server.URL, Token: "k"}, "0.2.0", nonexistentVerdict())
+		warnTo = original
+		server.Close()
+
+		if got := warnings.Len() > 0; got != testCase.wantWarn {
+			t.Fatalf("HTTP %d warned=%v, want %v (%q)",
+				testCase.status, got, testCase.wantWarn, warnings.String())
+		}
+		if testCase.wantWarn && !strings.Contains(warnings.String(), TokenEnvVar) {
+			t.Fatalf("warning does not say what to check: %q", warnings.String())
+		}
+	}
 }

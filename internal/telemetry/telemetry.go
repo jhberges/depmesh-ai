@@ -20,6 +20,8 @@ package telemetry
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -159,5 +161,20 @@ func ReportNonexistent(config Config, version string, v *vet.Verdict) {
 	if err != nil {
 		return
 	}
-	response.Body.Close()
+	defer response.Body.Close()
+	// A receiver that refuses our credentials is a configuration mistake that
+	// would otherwise stay invisible forever: the report is dropped, the vet
+	// is unaffected, and nothing anywhere says why. Auth failures only — a
+	// transient 5xx is not worth a line on every vet, and none of this
+	// changes the verdict.
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		fmt.Fprintf(warnTo,
+			"note: telemetry was rejected by %s (HTTP %d). Reports are being dropped;"+
+				" check the ingest key in $%s or %s.\n",
+			config.URL, response.StatusCode, TokenEnvVar, ConfigPath())
+	}
 }
+
+// warnTo is os.Stderr except in tests. Never stdout: the MCP server speaks
+// JSON-RPC there, and a stray line would corrupt the protocol.
+var warnTo io.Writer = os.Stderr

@@ -17,7 +17,7 @@ func TestWriteAppendsJSONL(t *testing.T) {
 	result := &policy.Result{Allowed: true}
 
 	for range 2 {
-		if err := Write(path, "cli", "0.2.0", verdict, result); err != nil {
+		if err := Write(path, Local("cli"), "0.2.0", verdict, result); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 	}
@@ -45,7 +45,7 @@ func TestWriteAppendsJSONL(t *testing.T) {
 }
 
 func TestEmptyPathIsNoop(t *testing.T) {
-	if err := Write("", "cli", "0.2.0", &vet.Verdict{}, nil); err != nil {
+	if err := Write("", Local("cli"), "0.2.0", &vet.Verdict{}, nil); err != nil {
 		t.Fatalf("noop write errored: %v", err)
 	}
 }

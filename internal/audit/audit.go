@@ -28,16 +28,46 @@ type Record struct {
 	Version   string         `json:"tool_version"`
 }
 
+// Caller identifies who asked. Actor and Hostname empty means "this process,
+// this machine", which is the answer on the CLI and the MCP server. A gate
+// serving delegated requests fills them from what the client sent, so the
+// record names the developer who asked rather than the server that answered
+// — client-asserted, and therefore only as trustworthy as the network the
+// gate listens on.
+type Caller struct {
+	Surface  string // cli | mcp | api
+	Actor    string
+	Hostname string
+}
+
+// Local describes this process as the caller.
+func Local(surface string) Caller { return Caller{Surface: surface} }
+
+// Resolve fills in whatever the caller left empty from this machine.
+func (c Caller) Resolve() Caller {
+	if c.Actor == "" {
+		c.Actor = actor()
+	}
+	if c.Hostname == "" {
+		if hostname, err := os.Hostname(); err == nil {
+			c.Hostname = hostname
+		}
+	}
+	return c
+}
+
 // Write appends a record for the decision to path. Auditing failures are
 // returned so callers on compliance-critical paths can decide to fail closed.
-func Write(path, surface, version string, v *vet.Verdict, policyResult *policy.Result) error {
+func Write(path string, caller Caller, version string, v *vet.Verdict, policyResult *policy.Result) error {
 	if path == "" {
 		return nil
 	}
+	caller = caller.Resolve()
 	record := Record{
 		Time:      time.Now().UTC().Format(time.RFC3339),
-		Actor:     actor(),
-		Surface:   surface,
+		Actor:     caller.Actor,
+		Hostname:  caller.Hostname,
+		Surface:   caller.Surface,
 		Ecosystem: v.Ecosystem,
 		Package:   v.Package,
 		Advice:    string(v.Advice),
@@ -45,9 +75,6 @@ func Write(path, surface, version string, v *vet.Verdict, policyResult *policy.R
 		Policy:    policyResult,
 		Degraded:  v.Degraded,
 		Version:   version,
-	}
-	if hostname, err := os.Hostname(); err == nil {
-		record.Hostname = hostname
 	}
 	line, err := json.Marshal(record)
 	if err != nil {

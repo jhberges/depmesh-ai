@@ -17,19 +17,32 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jhberges/depmesh-ai/internal/apikey"
 	"github.com/jhberges/depmesh-ai/internal/audit"
 	"github.com/jhberges/depmesh-ai/internal/gate"
 	"github.com/jhberges/depmesh-ai/internal/sources"
 	"github.com/jhberges/depmesh-ai/internal/upstream"
 )
 
-func Handler(g *gate.Gate) http.Handler {
+// Handler serves the gate. A non-empty key is required as a bearer token on
+// /v1/vet; an empty key serves without authentication.
+func Handler(g *gate.Gate, key string) http.Handler {
 	mux := http.NewServeMux()
+	// /healthz stays open: load balancers and container probes check it, and
+	// it reveals nothing but that the process is up.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("GET /v1/vet/{ecosystem}/{package...}", func(w http.ResponseWriter, r *http.Request) {
+		// Checked before anything else runs: an unauthenticated request must
+		// not reach a registry, the policy engine, or — above all — the audit
+		// log, whose growth is the reason this door has a lock.
+		if !apikey.Matches(key, apikey.FromHeader(r.Header.Get("Authorization"))) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="depmesh"`)
+			writeError(w, http.StatusUnauthorized, "missing or invalid API key")
+			return
+		}
 		ecosystem := r.PathValue("ecosystem")
 		name := r.PathValue("package")
 		enrich := r.URL.Query().Get("enrich") != "false"
@@ -109,7 +122,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 // ListenAndServe runs the API server on addr.
-func ListenAndServe(addr string, g *gate.Gate) error {
-	server := &http.Server{Addr: addr, Handler: Handler(g)}
+func ListenAndServe(addr string, g *gate.Gate, key string) error {
+	server := &http.Server{Addr: addr, Handler: Handler(g, key)}
 	return server.ListenAndServe()
 }

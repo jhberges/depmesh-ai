@@ -36,6 +36,7 @@ var client = &http.Client{Timeout: 30 * time.Second}
 // Request is one delegated vet.
 type Request struct {
 	Base      string
+	Key       string
 	Surface   string
 	Actor     string
 	Hostname  string
@@ -78,6 +79,9 @@ func Vet(request Request) ([]byte, error) {
 		return nil, &sources.UnavailableError{URL: endpoint, Err: err}
 	}
 	httpRequest.Header.Set("Accept", "application/json")
+	if request.Key != "" {
+		httpRequest.Header.Set("Authorization", "Bearer "+request.Key)
+	}
 	setIfPresent(httpRequest, SurfaceHeader, request.Surface)
 	setIfPresent(httpRequest, ActorHeader, request.Actor)
 	setIfPresent(httpRequest, HostnameHeader, request.Hostname)
@@ -102,6 +106,12 @@ func Vet(request Request) ([]byte, error) {
 			URL: endpoint,
 			Err: fmt.Errorf("gate reports: %s", detail(body, "registry unreachable")),
 		}
+	case http.StatusUnauthorized:
+		// A configuration problem, not a transient one: say so plainly rather
+		// than leaving someone to wonder why every vet suddenly fails.
+		return nil, fmt.Errorf(
+			"gate rejected our API key — set --upstream-key or $%s to the key it printed on startup",
+			"DEPMESH_UPSTREAM_KEY")
 	case http.StatusBadRequest:
 		return nil, fmt.Errorf("gate rejected the request: %s", detail(body, "bad request"))
 	default:

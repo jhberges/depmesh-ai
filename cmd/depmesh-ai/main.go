@@ -3,7 +3,7 @@
 //	depmesh-ai vet npm express
 //	depmesh-ai vet maven org.apache.commons:commons-lang3 --json
 //	depmesh-ai serve                  # MCP server on stdio
-//	depmesh-ai api --listen :8385    # HTTP API for internal deployment
+//	depmesh-ai api --listen :8385    # HTTP API, self-hosted inside your network
 package main
 
 import (

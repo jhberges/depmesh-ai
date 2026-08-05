@@ -374,7 +374,14 @@ switch ($telemetryMode) {
 	} catch {
 		Write-Warn "could not restrict permissions on $ConsentFile — it contains an ingest key"
 	}
-	Write-Step "telemetry ON — reporting nonexistent-package names to $TelemetryUrl"
+	# Say which of the two it is: anonymous reports land in the shared feed and
+	# in nobody's dashboard, which is the difference people are surprised by.
+	if ($TelemetryToken) {
+		Write-Step "telemetry ON — reporting nonexistent-package names to $TelemetryUrl, attributed to your tenant"
+	} else {
+		Write-Step "telemetry ON — reporting nonexistent-package names to $TelemetryUrl, anonymously"
+		Write-Host "    (no ingest key: reports feed the shared slopsquat list, not a tenant dashboard)"
+	}
 	Write-Host "    turn it off any time: Remove-Item '$ConsentFile'"
 }
 'no' {

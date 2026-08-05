@@ -1,7 +1,7 @@
-// Package api serves the vet gate over HTTP for internal deployment: one
-// instance run by a platform team inside the network boundary, so developer
-// machines and CI runners don't each need registry egress. This is the
-// deployment model regulated organizations usually require.
+// Package api serves the vet gate over HTTP for self-hosting: one instance run
+// by a platform team inside its own network boundary, so developer machines and
+// CI runners don't each need registry egress. This is the deployment model
+// regulated organizations usually require.
 //
 //	GET /v1/vet/{ecosystem}/{package...}   → Outcome JSON (200 allowed, 409 blocked)
 //	GET /healthz                           → 200 ok

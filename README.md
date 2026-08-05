@@ -203,7 +203,7 @@ surface, package, verdict, score, policy result, degraded sources. Ready for
 Splunk/ELK ingestion; if the audit write fails, the decision is withheld
 (fail closed).
 
-## HTTP API (internal deployment)
+## HTTP API (self-hosted, inside your network)
 
 For organizations where developer machines shouldn't talk to registries
 directly, run one instance inside the network boundary:

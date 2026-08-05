@@ -40,6 +40,16 @@ Content-Type: application/json
 Authorization: Bearer {ingest key}      # omitted when no key is configured
 ```
 
+The key is **optional**, and decides attribution rather than admission. With
+one, the report is attributed to that tenant. Without one, a receiver may keep
+it anonymously — the reference receiver does, because a hallucinated name is
+worth the same whoever saw it — or refuse it; both answers are conformant, so
+a producer must not treat `401` as a bug in itself.
+
+A key the receiver does not recognise is always `401`, never a silent demotion
+to anonymous. Quietly filing a mistyped key under "anonymous" would leave the
+sender looking at an empty dashboard with nothing to explain it.
+
 ```json
 {
   "kind": "nonexistent_package",
@@ -52,8 +62,8 @@ Authorization: Bearer {ingest key}      # omitted when no key is configured
 
 | Field | Type | Notes |
 |---|---|---|
-| `kind` | string | Currently always `nonexistent_package`. Treat as an open set. |
-| `ecosystem` | string | `npm`, `pypi`, `maven`, … |
+| `kind` | string | Currently always `nonexistent_package`. A receiver may accept a closed set (the reference one does), so a new kind means shipping the receiver before the producers. |
+| `ecosystem` | string | `npm`, `pypi`, `maven`. Same closed-set caveat as `kind`. |
 | `package` | string | The name as requested. |
 | `time` | RFC 3339 | Client clock. **The reference server overwrites this** with its own receive time; do not rely on it being preserved. |
 | `tool_version` | string | Producer build version. Receivers must tolerate any string. |
@@ -70,13 +80,27 @@ the exit code.
 
 | Status | Body | Meaning |
 |---|---|---|
-| `202` | `{"status":"accepted"}` | Stored. |
+| `202` | `{"status":"accepted","tenant":"…"}` | Stored. `tenant` is who it was attributed to, or `anonymous`. |
 | `400` | `{"error":"invalid JSON: …"}` | Unparseable body. |
 | `400` | `{"error":"kind, ecosystem and package are required"}` | Missing required field. |
-| `401` | `{"error":"missing or unknown ingest key"}` | Bearer token absent or unrecognised. |
+| `400` | `{"error":"unknown kind \"…\""}` | Outside the set this receiver accepts. |
+| `400` | `{"error":"unknown ecosystem \"…\""}` | Outside the set this receiver accepts. |
+| `400` | `{"error":"package name is longer than 214 characters"}` | Over the length cap. |
+| `400` | `{"error":"package and tool_version must be printable text"}` | Control characters or invalid UTF-8. |
+| `401` | `{"error":"unknown ingest key"}` | Bearer token present but unrecognised. |
+| `401` | `{"error":"missing ingest key"}` | No token, and this receiver does not take anonymous reports. |
+| `429` | `{"error":"too many anonymous reports; slow down or use an ingest key"}` | Rate limited; honour `Retry-After`. |
 | `500` | `{"error":"storage failure"}` | Receiver-side persistence error. |
 
-The producer ignores the status code. It is specified so that alternative
+The bounds above exist because anonymous ingest is an unauthenticated write
+path: a receiver that accepts keyless reports has to assume the sender is
+hostile, so it validates against closed sets, caps lengths, and meters
+callers. A receiver that requires a key can be laxer.
+
+The producer ignores the status code for the purpose of the vet — the verdict
+never depends on telemetry — but it does report `401` and `403` on stderr,
+because a rejected key would otherwise drop every report in silence for as
+long as the misconfiguration lasts. The rest is specified so that alternative
 receivers behave predictably for anyone debugging with `curl`.
 
 ## Server-side rules

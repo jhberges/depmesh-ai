@@ -218,6 +218,59 @@ curl localhost:8385/v1/vet/npm/express
 Package paths may contain slashes and colons (`/v1/vet/npm/@types/node`,
 `/v1/vet/maven/org.apache.commons:commons-lang3`).
 
+### Pointing developers at it
+
+The API is only half the story: a developer whose MCP server still calls npm
+directly is not inside the boundary at all. `--upstream` (or
+`$DEPMESH_UPSTREAM`) makes the CLI and the MCP server ask that one instance
+instead of the registries:
+
+```bash
+depmesh-ai serve --upstream https://depmesh.internal:8385   # MCP, no registry access needed
+depmesh-ai vet   --upstream https://depmesh.internal:8385 npm express
+```
+
+```json
+{
+  "mcpServers": {
+    "depmesh": {
+      "command": "/usr/local/bin/depmesh-ai",
+      "args": ["serve", "--upstream", "https://depmesh.internal:8385"]
+    }
+  }
+}
+```
+
+```
+depmesh-ai serve --upstream ──→ depmesh-ai api ──→ npm / PyPI / Maven / deps.dev
+ (developer machine,            (one instance,
+  no egress needed)              policy + audit + telemetry live here)
+```
+
+What moves to the gate, and what that means:
+
+- **Policy and audit are central.** One reviewed policy file and one audit log
+  for the org, rather than a copy on every laptop. A local policy file is
+  *not* applied on top — the package would be judged twice against two
+  different files — and the CLI says so on stderr rather than letting you
+  believe otherwise.
+- **The audit record names the developer, not the server.** The client sends
+  its surface, username, and hostname, and the gate records those. They are
+  client-asserted, so they are worth exactly as much as your trust in the
+  network the gate listens on.
+- **Telemetry is the gate's job**, so the ingest key lives in one place
+  instead of on every machine, and one hallucinated name is counted once.
+- **An unreachable gate is never a fallback to direct registry access.** A
+  machine that isn't allowed to reach npm must not start doing so because the
+  gate is down: the vet fails as "unknown", exactly like an unreachable
+  registry, and never as approval.
+
+Two things this does not do yet. The API has **no authentication** — put it on
+a trusted network, or behind a reverse proxy that terminates mTLS; anyone who
+can reach it can ask it questions and write client-asserted identity into its
+audit log. And the installers have no `--upstream` flag yet, so org-wide
+rollout means writing the `args` above into the client configs yourself.
+
 ## Telemetry (opt-in, off by default)
 
 A REJECT for a *nonexistent* package is usually the fingerprint of an

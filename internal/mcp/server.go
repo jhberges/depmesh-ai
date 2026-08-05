@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/jhberges/depmesh-ai/internal/audit"
 	"github.com/jhberges/depmesh-ai/internal/gate"
 	"github.com/jhberges/depmesh-ai/internal/sources"
 )
@@ -139,7 +140,7 @@ func runVet(g *gate.Gate, ecosystem, name string) (text string, isError bool) {
 	if ecosystem == "" || name == "" {
 		return "Invalid arguments: both 'ecosystem' and 'package' are required", true
 	}
-	outcome, err := g.Vet("mcp", ecosystem, name, true)
+	outcome, err := g.Vet(audit.Local("mcp"), ecosystem, name, true)
 	var unavailable *sources.UnavailableError
 	switch {
 	case errors.As(err, &unavailable):

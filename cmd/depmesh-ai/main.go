@@ -13,6 +13,7 @@ import (
 	"os"
 
 	"github.com/jhberges/depmesh-ai/internal/api"
+	"github.com/jhberges/depmesh-ai/internal/audit"
 	"github.com/jhberges/depmesh-ai/internal/gate"
 	"github.com/jhberges/depmesh-ai/internal/mcp"
 	"github.com/jhberges/depmesh-ai/internal/sources"
@@ -21,14 +22,19 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  depmesh-ai vet [--json] [--no-enrich] [--policy FILE] [--audit-log FILE] <ecosystem> <package>
-  depmesh-ai serve [--policy FILE] [--audit-log FILE]
+  depmesh-ai vet [--json] [--no-enrich] [--policy FILE] [--audit-log FILE] [--upstream URL] <ecosystem> <package>
+  depmesh-ai serve [--policy FILE] [--audit-log FILE] [--upstream URL]
   depmesh-ai api [--listen ADDR] [--policy FILE] [--audit-log FILE]
 
 ecosystems: npm | pypi | maven (maven packages: groupId:artifactId)
 
 policy is auto-discovered from ./depmesh.policy.json or $DEPMESH_POLICY;
---policy makes it explicit and errors when the file is missing.`)
+--policy makes it explicit and errors when the file is missing.
+
+--upstream (or $DEPMESH_UPSTREAM) delegates the decision to a central
+"depmesh-ai api" instance, so this machine needs no registry access and the
+gate's policy and audit log apply. It never falls back to direct registry
+access when that gate is unreachable.`)
 	os.Exit(2)
 }
 
@@ -56,11 +62,37 @@ func gateFlags(flags *flag.FlagSet) (policyPath, auditLog *string) {
 	return
 }
 
-func buildGate(policyPath, auditLog string) *gate.Gate {
-	g, err := gate.New(policyPath, auditLog)
+func upstreamFlag(flags *flag.FlagSet) *string {
+	// Backquotes name the placeholder in flag's usage output — hence `URL`.
+	return flags.String("upstream", "",
+		"delegate to a central depmesh-ai api instance at this `URL` instead of contacting registries (default: $DEPMESH_UPSTREAM)")
+}
+
+// resolveUpstream prefers the flag, then the environment. Only the two
+// developer-facing surfaces call it: `api` is the far end of the delegation
+// and must never chain onward.
+func resolveUpstream(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return os.Getenv("DEPMESH_UPSTREAM")
+}
+
+func buildGate(policyPath, auditLog, upstreamURL string) *gate.Gate {
+	g, err := gate.New(policyPath, auditLog, upstreamURL)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
+	}
+	// Delegating means the far side decides and records. Saying so beats
+	// letting someone believe a local policy file is being enforced.
+	if g.Upstream != "" {
+		if g.Policy != nil {
+			fmt.Fprintln(os.Stderr, "note: --upstream is set; the local policy file is ignored, the gate's policy applies")
+		}
+		if g.AuditLog != "" {
+			fmt.Fprintln(os.Stderr, "note: --upstream is set; decisions are audited by the gate, not locally")
+		}
 	}
 	return g
 }
@@ -70,13 +102,14 @@ func runVet(args []string) int {
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	noEnrich := flags.Bool("no-enrich", false, "skip deps.dev enrichment (advisories)")
 	policyPath, auditLog := gateFlags(flags)
+	upstreamURL := upstreamFlag(flags)
 	_ = flags.Parse(args)
 	if flags.NArg() != 2 {
 		usage()
 	}
-	g := buildGate(*policyPath, *auditLog)
+	g := buildGate(*policyPath, *auditLog, resolveUpstream(*upstreamURL))
 
-	outcome, err := g.Vet("cli", flags.Arg(0), flags.Arg(1), !*noEnrich)
+	outcome, err := g.Vet(audit.Local("cli"), flags.Arg(0), flags.Arg(1), !*noEnrich)
 	var unavailable *sources.UnavailableError
 	switch {
 	case errors.As(err, &unavailable):
@@ -105,8 +138,9 @@ func runVet(args []string) int {
 func runServe(args []string) int {
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
 	policyPath, auditLog := gateFlags(flags)
+	upstreamURL := upstreamFlag(flags)
 	_ = flags.Parse(args)
-	g := buildGate(*policyPath, *auditLog)
+	g := buildGate(*policyPath, *auditLog, resolveUpstream(*upstreamURL))
 	if err := mcp.Serve(g, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
@@ -119,7 +153,7 @@ func runAPI(args []string) int {
 	listen := flags.String("listen", ":8385", "listen address")
 	policyPath, auditLog := gateFlags(flags)
 	_ = flags.Parse(args)
-	g := buildGate(*policyPath, *auditLog)
+	g := buildGate(*policyPath, *auditLog, "")
 	fmt.Fprintf(os.Stderr, "depmesh-ai %s serving on %s (policy: %v, audit: %q)\n",
 		gate.Version, *listen, g.Policy != nil, g.AuditLog)
 	if err := api.ListenAndServe(*listen, g); err != nil {

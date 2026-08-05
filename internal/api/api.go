@@ -14,9 +14,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"unicode"
 
+	"github.com/jhberges/depmesh-ai/internal/audit"
 	"github.com/jhberges/depmesh-ai/internal/gate"
 	"github.com/jhberges/depmesh-ai/internal/sources"
+	"github.com/jhberges/depmesh-ai/internal/upstream"
 )
 
 func Handler(g *gate.Gate) http.Handler {
@@ -30,7 +34,7 @@ func Handler(g *gate.Gate) http.Handler {
 		name := r.PathValue("package")
 		enrich := r.URL.Query().Get("enrich") != "false"
 
-		outcome, err := g.Vet("api", ecosystem, name, enrich)
+		outcome, err := g.Vet(caller(r), ecosystem, name, enrich)
 		var unavailable *sources.UnavailableError
 		switch {
 		case errors.As(err, &unavailable):
@@ -59,6 +63,43 @@ func Handler(g *gate.Gate) http.Handler {
 		_ = encoder.Encode(outcome)
 	})
 	return mux
+}
+
+// caller identifies who to record for this request. A delegating client
+// sends its own surface and identity, because "who asked" is the developer
+// on the far end, not this server; a direct caller sends nothing and gets
+// this machine's identity. The surface is mapped through a fixed vocabulary
+// rather than copied, and the free-text fields are bounded, so a client
+// cannot write arbitrary values into the audit log.
+func caller(r *http.Request) audit.Caller {
+	c := audit.Caller{
+		Surface:  "api",
+		Actor:    clean(r.Header.Get(upstream.ActorHeader)),
+		Hostname: clean(r.Header.Get(upstream.HostnameHeader)),
+	}
+	switch strings.ToLower(r.Header.Get(upstream.SurfaceHeader)) {
+	case "cli":
+		c.Surface = "cli"
+	case "mcp":
+		c.Surface = "mcp"
+	}
+	return c
+}
+
+const maxIdentityLength = 128
+
+func clean(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, value)
+	if runes := []rune(value); len(runes) > maxIdentityLength {
+		value = string(runes[:maxIdentityLength])
+	}
+	return value
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

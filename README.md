@@ -117,6 +117,7 @@ Example output:
 | Go modules | `go` | Go | proxy.golang.org | `github.com/pkg/errors` (full module path) |
 | Packagist | `packagist` | PHP | repo.packagist.org | `vendor/package` |
 | pub.dev | `pub` | Dart, Flutter | pub.dev | `http` |
+| Hex | `hex` | Elixir, Erlang | hex.pm | `phoenix` |
 
 Every one is read from the registry that actually resolves the dependency, so
 existence is authoritative rather than inferred. Which signals a given
@@ -385,8 +386,8 @@ so an internal endpoint is a few lines of code to implement.
 | release pace | registry version history | ported from the original DepMesh `ArtifactReleasePaceMetrics` |
 | staleness | latest release date | soft penalty >2y, hard >5y |
 | package age | first release date | <60 days old = slopsquatting-risk flag |
-| deprecation | npm `deprecated`, PyPI yanked, NuGet `deprecation`, go.mod `// Deprecated:`, Packagist `abandoned`, a fully yanked crate or retracted pub package | heavy penalty |
-| maintainers | registry metadata | bus-factor ≤1 penalized |
+| deprecation | npm `deprecated`, PyPI yanked, NuGet `deprecation`, go.mod `// Deprecated:`, Packagist `abandoned`, a fully yanked crate or retracted pub package, or a Hex retirement on the current release | heavy penalty |
+| maintainers | registry metadata (npm, Packagist, Hex) | bus-factor ≤1 penalized |
 | license | registry / POM / deps.dev | missing or copyleft flagged |
 | advisories | deps.dev (optional) | degrades gracefully when unreachable |
 

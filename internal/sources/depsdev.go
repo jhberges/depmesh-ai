@@ -20,6 +20,7 @@ var depsDevSystem = map[model.Ecosystem]string{
 	model.Maven: "maven",
 	model.NuGet: "nuget",
 	model.Cargo: "cargo",
+	model.Go:    "go",
 }
 
 type depsDevVersion struct {

@@ -380,9 +380,20 @@ reported in the output rather than guessed around.
 ## Status
 
 Working prototype. Known gaps: Maven license detection doesn't follow parent
-POMs (deps.dev covers this when reachable); no OSV fallback for advisories
-yet; npm "staleness" uses the most recent publish across all dist-tags, which
-can be a backport rather than the latest major.
+POMs (deps.dev covers this when reachable); no OSV fallback for advisories yet.
+
+Staleness no longer measures from the most recent publish across all dist-tags
+— it anchors on the latest release, so a patch backported to an old major
+doesn't make an abandoned project look fresh. It is also **cadence-relative**:
+"quiet" is judged against the project's own average release gap, which flags a
+weekly-release project that has gone silent for a few months long before a
+fixed two-year threshold would, while still applying that threshold as a floor.
+
+The engine can also vet a **specific version** — advisories, license, yanks,
+and how far behind the pin is, measured in the project's own release intervals
+— but no surface exposes it yet: the CLI, MCP server, and API all still ask
+package-level questions. See [docs/VERSION-VETTING.md](docs/VERSION-VETTING.md)
+for the design and what remains.
 
 ## Heritage
 

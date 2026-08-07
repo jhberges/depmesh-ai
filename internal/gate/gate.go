@@ -104,11 +104,11 @@ func New(policyPath, auditOverride, upstreamURL string) (*Gate, error) {
 // telemetry, and we return what it decided. Applying local policy on top
 // would judge the same package twice against two files; reporting telemetry
 // on both ends would count one hallucination twice.
-func (g *Gate) Vet(caller audit.Caller, ecosystem, name string, enrich bool) (*Outcome, error) {
+func (g *Gate) Vet(caller audit.Caller, ecosystem, name, version string, enrich bool) (*Outcome, error) {
 	if g.Upstream != "" {
-		return g.vetUpstream(caller, ecosystem, name, enrich)
+		return g.vetUpstream(caller, ecosystem, name, version, enrich)
 	}
-	verdict, err := vet.Vet(ecosystem, name, enrich)
+	verdict, err := vet.Vet(ecosystem, name, version, enrich)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,16 @@ func (g *Gate) Vet(caller audit.Caller, ecosystem, name string, enrich bool) (*O
 	return outcome, nil
 }
 
-func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name string, enrich bool) (*Outcome, error) {
+func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name, version string, enrich bool) (*Outcome, error) {
+	// The wire format has no version field yet, so a delegating client cannot
+	// ask a gate about one. Silently dropping it would return a package-level
+	// verdict to a caller who asked a version-level question — approval for
+	// something that was never examined — so refuse instead.
+	if version != "" {
+		return nil, fmt.Errorf(
+			"version-aware vetting is not available through --upstream yet: the gate at %s would be asked about %s only",
+			g.Upstream, name)
+	}
 	caller = caller.Resolve()
 	body, err := upstream.Vet(upstream.Request{
 		Base:      g.Upstream,

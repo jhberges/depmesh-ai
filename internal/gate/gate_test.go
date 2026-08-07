@@ -59,7 +59,7 @@ func TestDelegatedDecisionAndIdentitySurviveTheHop(t *testing.T) {
 	developer := &gate.Gate{Upstream: middle.URL}
 	outcome, err := developer.Vet(
 		audit.Caller{Surface: "mcp", Actor: "alice", Hostname: "laptop"},
-		"npm", "@types/node", true)
+		"npm", "@types/node", "", true)
 	if err != nil {
 		t.Fatalf("vet: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestLocalPolicyIsNotAppliedWhenDelegating(t *testing.T) {
 		// Would block everything if it were consulted.
 		Policy: &policy.Policy{MinScore: 100, Licenses: policy.Licenses{RequireDeclared: true}},
 	}
-	outcome, err := developer.Vet(audit.Local("cli"), "npm", "@types/node", true)
+	outcome, err := developer.Vet(audit.Local("cli"), "npm", "@types/node", "", true)
 	if err != nil {
 		t.Fatalf("vet: %v", err)
 	}
@@ -114,11 +114,31 @@ func TestGarbageResponseIsAnError(t *testing.T) {
 			_, _ = w.Write([]byte(body))
 		}))
 		developer := &gate.Gate{Upstream: server.URL}
-		outcome, err := developer.Vet(audit.Local("cli"), "npm", "left-pad", true)
+		outcome, err := developer.Vet(audit.Local("cli"), "npm", "left-pad", "", true)
 		if err == nil {
 			t.Fatalf("body %q returned outcome %+v, want error", body, outcome)
 		}
 		server.Close()
+	}
+}
+
+// The wire format carries no version yet. Answering a version-level question
+// with a package-level verdict would hand back approval for something that was
+// never examined, so a delegating gate refuses rather than drops the version.
+func TestDelegatingGateRefusesAVersionItCannotForward(t *testing.T) {
+	asked := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asked = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	developer := &gate.Gate{Upstream: server.URL}
+	if _, err := developer.Vet(audit.Local("cli"), "npm", "express", "4.18.2", true); err == nil {
+		t.Fatal("a version was silently dropped on the way to the gate")
+	}
+	if asked {
+		t.Fatal("the gate was asked a question that omitted the version")
 	}
 }
 

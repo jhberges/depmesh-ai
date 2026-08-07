@@ -38,7 +38,7 @@ type mavenPOM struct {
 	} `xml:"licenses>license"`
 }
 
-func fetchMaven(name string) (*model.PackageFacts, error) {
+func fetchMaven(name, version string) (*model.PackageFacts, error) {
 	group, artifact, ok := strings.Cut(name, ":")
 	if !ok {
 		return nil, fmt.Errorf("maven package names must be 'groupId:artifactId', got %q", name)
@@ -79,7 +79,38 @@ func fetchMaven(name string) (*model.PackageFacts, error) {
 	if facts.LatestVersion != "" {
 		facts.License = pomLicense(baseURL, artifact, facts.LatestVersion)
 	}
+
+	if version != "" {
+		facts.Requested = mavenVersionFacts(facts, baseURL, artifact, version, metadata.Versioning.Versions)
+	}
 	return facts, nil
+}
+
+// mavenVersionFacts resolves a requested version against maven-metadata.xml,
+// and on a miss confirms against the POM for that exact coordinate — metadata
+// can lag behind what is actually published, so its silence is not proof.
+//
+// The requested version's license is free: pomLicense already takes a version,
+// and this is simply the same single request pointed at a different coordinate
+// instead of always at the latest one.
+func mavenVersionFacts(facts *model.PackageFacts, baseURL, artifact, version string, published []string) *model.VersionFacts {
+	resolved := ""
+	for _, candidate := range published {
+		if candidate == version {
+			resolved = candidate
+			break
+		}
+	}
+	vf := requestedVersion(facts, version, resolved, func() (string, error) {
+		if _, err := getText(pomURL(baseURL, artifact, version)); err != nil {
+			return "", err
+		}
+		return version, nil
+	})
+	if vf.Resolved != "" {
+		vf.License = pomLicense(baseURL, artifact, vf.Resolved)
+	}
+	return vf
 }
 
 func listingDates(baseURL string) map[string]time.Time {
@@ -96,8 +127,12 @@ func listingDates(baseURL string) map[string]time.Time {
 	return dates
 }
 
+func pomURL(baseURL, artifact, version string) string {
+	return fmt.Sprintf("%s/%s/%s-%s.pom", baseURL, version, artifact, version)
+}
+
 func pomLicense(baseURL, artifact, version string) string {
-	body, err := getText(fmt.Sprintf("%s/%s/%s-%s.pom", baseURL, version, artifact, version))
+	body, err := getText(pomURL(baseURL, artifact, version))
 	if err != nil {
 		return ""
 	}

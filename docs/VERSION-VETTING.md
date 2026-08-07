@@ -97,6 +97,17 @@ The stakes are asymmetric on purpose. A false "exists" is a missed warning; a
 false "does not exist" tells a developer that a real, working, pinned
 dependency is a hallucination. Fail to the former.
 
+Which leaves the question of how a miss ever becomes a denial, since we cannot
+tell a normalization failure from a genuine absence by staring harder at the
+list. The answer is to stop guessing and ask: on a miss, request that one
+version directly from an endpoint that is authoritative about it —
+`/pypi/{name}/{version}/json` for PyPI, the `.pom` for a Maven coordinate — and
+let `ErrNotFound` be the only thing that sets `Exists` false. That costs one
+extra request on the miss path alone, and it is the difference between a
+trustworthy REJECT and an accusation. npm needs no such call: its packument
+enumerates every published version and npm publishes only canonical semver, so
+the enumeration is itself authoritative.
+
 ## 3. Scope boundary: exact versions only
 
 Build tools hand out constraints, not versions: `[1.0,2.0)`, `1.+`,
@@ -132,9 +143,18 @@ by date) to get `idx`, then:
 | `version-advisories` | -20 × min(n,3) | advisories against this version (deps.dev) |
 | `version-license` | -15 / -10 | this version's license differs from the latest, or is absent/copyleft |
 | `version-currency` | 0 → -25 | cadence-normalized lag — see §5 |
-| `version-prerelease` | -15 | prerelease pinned (`-rc`, `-beta`, `.dev`, `-M1`) |
+| `version-prerelease` | -30 | prerelease pinned (`-rc`, `-beta`, `.dev`, `-M1`) |
 | `version-snapshot` | -25 | `-SNAPSHOT`: mutable, cannot be vetted |
 | `version-latest` | 0 | this *is* the latest release |
+| `version-superseded` | 0 | superseded for over a year — context, not a charge |
+| `version-cadence-shift` | 0 | the project slowed markedly after this release |
+
+`version-prerelease` is deliberately heavy enough to cost a band on its own:
+pinning a release candidate in production deserves a caution even when
+everything else about the package is perfect. The two 0-delta signals are
+reported rather than scored because the package-level `staleness` signal already
+prices a project that has gone quiet, and charging for the same silence twice
+would be double counting.
 
 A nonexistent version is a REJECT of the same family as a nonexistent package,
 and it is a real agent failure mode — models invent plausible version numbers
@@ -192,9 +212,21 @@ threshold cannot make.
 weakness: `staleYearsSoft`/`staleYearsHard` (2y/5y, `vet.go:33`) are absolute,
 so they call a healthy annual-release library stale and stay silent about a
 weekly-release project that has gone quiet for eight months. Cadence-relative
-staleness catches abandonment far earlier and stops penalizing slow-by-design
-projects. Keep the absolute thresholds as a backstop for `NotEnoughData`, and
-make cadence-relative the primary reading when `State == OK`.
+staleness catches abandonment far earlier: a weekly-release project quiet for
+200 days is flagged, where the two-year threshold said nothing.
+
+The absolute thresholds stay as a **floor, not merely a fallback** — take the
+worse of the two readings. The tempting version of this idea is to let cadence
+replace absolute age entirely, so that a project with a three-year average gap
+is not called stale two and a half years in. That is wrong from the consumer's
+side: a dependency nobody has shipped in three years has three years of
+unpatched anything in it, however leisurely its normal rhythm. Cadence-relative
+staleness is there to catch decay *sooner*, never to excuse it.
+
+Cadence-relative staleness also needs a floor under the quiet period itself
+(90 days). Without one, a project that ships twice a week is "eight intervals
+overdue" after a fortnight, and a fortnight of silence is not abandonment
+however fast a project normally moves.
 
 `cadenceShift` answers a question no current signal touches: *did this project
 decay after we adopted it?* A dependency pinned when releases came every two
@@ -324,14 +356,29 @@ actually want, and it stops covering the next release automatically.
 
 | Phase | Work | Est. |
 |---|---|---|
-| **P0** | `VersionFacts` through the sources; deps.dev one-liner; per-version license / yank / deprecation; tri-state version existence; `version-*` signals | 1–2d |
-| **P1** | Cadence metrics (§5), `LatestVersion` anchor fix, prerelease/yank filtering of the gap count | 1–2d |
+| **P0** ✅ | `VersionFacts` through the sources; deps.dev one-liner; per-version license / yank / deprecation; tri-state version existence; `version-*` signals | 1–2d |
+| **P1** ✅ | Cadence metrics (§5), `LatestVersion` anchor fix, prerelease/yank filtering of the gap count | 1–2d |
 | **P2** | CLI / API / MCP / upstream / audit / policy plumbing; README + this doc | 1–2d |
 | **P3** | Loose version comparator → true "versions behind", major-version distance, PEP 440 normalization | 1d |
 
 P0 and P1 are self-contained engine work and deliver most of the value on the
 existing surfaces. P2 is what the Gradle plugin needs. P3 upgrades the honest
 "published since" wording into a real "behind" count.
+
+**P0 and P1 have landed.** Two things came out differently from the sketch
+above, both noted in place: absolute staleness is a floor rather than a fallback
+(§5), and `version-prerelease` is -30 rather than -15 so that it costs a band on
+its own (§4). One thing the sketch left open is settled: a lookup miss is
+confirmed against a per-version endpoint before it is ever reported as
+non-existence (§2).
+
+Until P2 lands, no surface can pass a version — `gate.Vet` takes one, and the
+CLI, MCP server, and API all pass empty. What *is* live on today's surfaces is
+the package-level half of P1: staleness is now cadence-relative, and it is
+anchored on `dist-tags.latest` rather than on whatever was published most
+recently. A delegating gate (`--upstream`) refuses a version outright rather
+than forwarding a request the wire format cannot carry, because a package-level
+answer to a version-level question is approval for something never examined.
 
 ## 8. What this does not do
 

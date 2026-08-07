@@ -144,7 +144,7 @@ func runVet(args []string) int {
 	}
 	g := buildGate(options, resolveUpstream(*upstreamURL))
 
-	outcome, err := g.Vet(audit.Local("cli"), flags.Arg(0), flags.Arg(1), !*noEnrich)
+	outcome, err := g.Vet(audit.Local("cli"), flags.Arg(0), flags.Arg(1), "", !*noEnrich)
 	var unavailable *sources.UnavailableError
 	switch {
 	case errors.As(err, &unavailable):

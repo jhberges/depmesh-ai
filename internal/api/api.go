@@ -34,7 +34,7 @@ func Handler(g *gate.Gate) http.Handler {
 		name := r.PathValue("package")
 		enrich := r.URL.Query().Get("enrich") != "false"
 
-		outcome, err := g.Vet(caller(r), ecosystem, name, enrich)
+		outcome, err := g.Vet(caller(r), ecosystem, name, "", enrich)
 		var unavailable *sources.UnavailableError
 		switch {
 		case errors.As(err, &unavailable):

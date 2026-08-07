@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jhberges/depmesh-ai/internal/model"
@@ -47,7 +48,7 @@ func flexibleString(raw json.RawMessage, objectKey string) string {
 	return ""
 }
 
-func fetchNPM(name string) (*model.PackageFacts, error) {
+func fetchNPM(name, version string) (*model.PackageFacts, error) {
 	facts := &model.PackageFacts{Ecosystem: model.NPM, Name: name}
 	var doc npmDoc
 	err := getJSON(npmRegistry+"/"+url.PathEscape(name), &doc)
@@ -65,15 +66,20 @@ func fetchNPM(name string) (*model.PackageFacts, error) {
 	facts.Homepage = doc.Homepage
 	facts.RepositoryURL = flexibleString(doc.Repository, "url")
 
-	for version, stamp := range doc.Time {
-		if version == "created" || version == "modified" {
+	for published, stamp := range doc.Time {
+		if published == "created" || published == "modified" {
 			continue
 		}
-		ref := model.ReleaseRef{Version: version}
+		ref := model.ReleaseRef{Version: published}
 		if t, err := time.Parse(time.RFC3339, stamp); err == nil {
 			t := t.UTC()
 			ref.ReleaseDate = &t
 		}
+		// The packument carries deprecation per version, so a release that has
+		// been withdrawn can be excluded from the gap between a pinned version
+		// and the latest one. Previously only the latest version's flag was
+		// read.
+		ref.Yanked = isDeprecated(doc.Versions[published])
 		facts.Releases = append(facts.Releases, ref)
 	}
 	sortNewestFirst(facts.Releases)
@@ -84,16 +90,58 @@ func fetchNPM(name string) (*model.PackageFacts, error) {
 	} else {
 		facts.License = flexibleString(doc.License, "type")
 	}
-	if deprecation := flexibleString(latest.Deprecated, ""); deprecation != "" {
-		facts.Deprecated = true
-		facts.DeprecationMessage = deprecation
-	} else if len(latest.Deprecated) > 0 && string(latest.Deprecated) == "true" {
-		facts.Deprecated = true
-	}
+	facts.Deprecated, facts.DeprecationMessage = deprecation(latest)
 	if doc.Maintainers != nil {
 		facts.MaintainerCount = model.Int(len(doc.Maintainers))
 	}
+
+	if version != "" {
+		facts.Requested = npmVersionFacts(facts, doc, version)
+	}
 	return facts, nil
+}
+
+// npmVersionFacts reads the requested version's own license and deprecation
+// out of the packument. Both are already there for every version, so this costs
+// no additional request — the packument's `versions` map was simply only ever
+// read at `dist-tags.latest` before.
+//
+// The packument enumerates every published version, and npm publishes only
+// canonical semver, so a miss here is authoritative and needs no confirming
+// request. A leading "v" is tolerated because people paste it.
+func npmVersionFacts(facts *model.PackageFacts, doc npmDoc, version string) *model.VersionFacts {
+	resolved := ""
+	for _, candidate := range []string{version, strings.TrimPrefix(version, "v")} {
+		if _, ok := doc.Versions[candidate]; ok {
+			resolved = candidate
+			break
+		}
+	}
+	vf := requestedVersion(facts, version, resolved, nil)
+	if vf.Resolved == "" {
+		return vf
+	}
+	entry := doc.Versions[vf.Resolved]
+	vf.License = flexibleString(entry.License, "type")
+	vf.Deprecated, vf.DeprecationMessage = deprecation(entry)
+	return vf
+}
+
+// deprecation reads npm's per-version `deprecated` field, which is a message
+// string when there is one and a bare `true` when there is not.
+func deprecation(entry npmVersion) (bool, string) {
+	if message := flexibleString(entry.Deprecated, ""); message != "" {
+		return true, message
+	}
+	if len(entry.Deprecated) > 0 && string(entry.Deprecated) == "true" {
+		return true, ""
+	}
+	return false, ""
+}
+
+func isDeprecated(entry npmVersion) bool {
+	yanked, _ := deprecation(entry)
+	return yanked
 }
 
 func sortNewestFirst(refs []model.ReleaseRef) {

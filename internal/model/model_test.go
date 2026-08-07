@@ -38,7 +38,7 @@ func TestEveryEcosystemParses(t *testing.T) {
 }
 
 func TestEcosystemList(t *testing.T) {
-	if got := EcosystemList(); got != "npm, pypi, maven, nuget, cargo or go" {
+	if got := EcosystemList(); got != "npm, pypi, maven, nuget, cargo, go, packagist or pub" {
 		t.Errorf("EcosystemList() = %q", got)
 	}
 }

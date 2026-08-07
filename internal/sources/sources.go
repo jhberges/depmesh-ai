@@ -22,6 +22,10 @@ func Gather(ecosystem model.Ecosystem, name string, enrich bool) (*model.Package
 		facts, err = fetchCargo(name)
 	case model.Go:
 		facts, err = fetchGo(name)
+	case model.Packagist:
+		facts, err = fetchPackagist(name)
+	case model.Pub:
+		facts, err = fetchPub(name)
 	}
 	if err != nil {
 		return nil, err

@@ -34,10 +34,18 @@ func enrichDepsDev(facts *model.PackageFacts) {
 	if facts.Exists == nil || !*facts.Exists || facts.LatestVersion == "" {
 		return
 	}
+	// Not every ecosystem is covered — packagist and pub are not, and hex is
+	// not. That is an absent signal, not a degraded one: reporting deps.dev as
+	// unreachable would send the reader looking for an egress problem that
+	// does not exist.
+	system, covered := depsDevSystem[facts.Ecosystem]
+	if !covered {
+		return
+	}
 	endpoint := fmt.Sprintf(
 		"%s/systems/%s/packages/%s/versions/%s",
 		depsDevAPI,
-		depsDevSystem[facts.Ecosystem],
+		system,
 		url.PathEscape(facts.Name),
 		url.PathEscape(facts.LatestVersion),
 	)

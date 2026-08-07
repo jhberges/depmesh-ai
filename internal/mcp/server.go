@@ -21,6 +21,7 @@ import (
 
 	"github.com/jhberges/depmesh-ai/internal/audit"
 	"github.com/jhberges/depmesh-ai/internal/gate"
+	"github.com/jhberges/depmesh-ai/internal/model"
 	"github.com/jhberges/depmesh-ai/internal/sources"
 )
 
@@ -42,13 +43,14 @@ var toolList = []map[string]any{
 			"properties": map[string]any{
 				"ecosystem": map[string]any{
 					"type":        "string",
-					"enum":        []string{"npm", "pypi", "maven"},
+					"enum":        model.EcosystemStrings(),
 					"description": "Package ecosystem/registry",
 				},
 				"package": map[string]any{
 					"type": "string",
-					"description": "Package name. For maven use groupId:artifactId, " +
-						"e.g. org.apache.commons:commons-lang3",
+					"description": "Package name, exactly as it appears on the registry. " +
+						"For maven use groupId:artifactId, e.g. " +
+						"org.apache.commons:commons-lang3",
 				},
 			},
 			"required":             []string{"ecosystem", "package"},

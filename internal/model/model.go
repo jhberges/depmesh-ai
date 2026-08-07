@@ -17,18 +17,43 @@ const (
 	NPM   Ecosystem = "npm"
 	PyPI  Ecosystem = "pypi"
 	Maven Ecosystem = "maven"
+	NuGet Ecosystem = "nuget"
 )
 
-func ParseEcosystem(value string) (Ecosystem, error) {
-	switch Ecosystem(strings.ToLower(value)) {
-	case NPM:
-		return NPM, nil
-	case PyPI:
-		return PyPI, nil
-	case Maven:
-		return Maven, nil
+// Ecosystems is every ecosystem depmesh-ai can vet, oldest support first.
+// It is the single list the rest of the tool reads from: ParseEcosystem
+// accepts exactly these, the CLI usage and the MCP tool schema render them,
+// and adding an ecosystem means appending here rather than remembering four
+// separate places that drifted apart.
+var Ecosystems = []Ecosystem{NPM, PyPI, Maven, NuGet}
+
+// EcosystemStrings is Ecosystems as plain strings, for JSON schemas.
+func EcosystemStrings() []string {
+	out := make([]string, len(Ecosystems))
+	for i, ecosystem := range Ecosystems {
+		out[i] = string(ecosystem)
 	}
-	return "", fmt.Errorf("unknown ecosystem %q; expected npm, pypi or maven", value)
+	return out
+}
+
+// EcosystemList renders Ecosystems for help text and error messages:
+// "npm, pypi, maven or nuget".
+func EcosystemList() string {
+	names := EcosystemStrings()
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
+}
+
+func ParseEcosystem(value string) (Ecosystem, error) {
+	candidate := Ecosystem(strings.ToLower(value))
+	for _, ecosystem := range Ecosystems {
+		if ecosystem == candidate {
+			return ecosystem, nil
+		}
+	}
+	return "", fmt.Errorf("unknown ecosystem %q; expected %s", value, EcosystemList())
 }
 
 // ReleaseRef is a single released version. Descendant of legacy VersionRef.

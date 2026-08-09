@@ -63,7 +63,7 @@ sender looking at an empty dashboard with nothing to explain it.
 | Field | Type | Notes |
 |---|---|---|
 | `kind` | string | Currently always `nonexistent_package`. A receiver may accept a closed set (the reference one does), so a new kind means shipping the receiver before the producers. |
-| `ecosystem` | string | `npm`, `pypi`, `maven`, `nuget`, `cargo`. Same closed-set caveat as `kind`: the receiver has to learn a new one before this tool emits it. |
+| `ecosystem` | string | `npm`, `pypi`, `maven`, `nuget`, `cargo`, `go`. Same closed-set caveat as `kind`: the receiver has to learn a new one before this tool emits it. |
 | `package` | string | The name as requested. |
 | `time` | RFC 3339 | Client clock. **The reference server overwrites this** with its own receive time; do not rely on it being preserved. |
 | `tool_version` | string | Producer build version. Receivers must tolerate any string. |

@@ -87,6 +87,12 @@ func paceSignals(pace metrics.ReleasePaceMetrics, today time.Time) []Signal {
 		})
 	}
 
+	// The version named here is whatever was published most recently, which
+	// is not always Verdict.LatestVersion: adapters that can tell a
+	// pre-release apart report the newest *stable* version as the latest,
+	// because that is what a reader would install and what advisories are
+	// looked up against. Staleness asks a different question — has anyone
+	// touched this at all — so a fresh beta counts.
 	if latest := pace.LatestRelease; latest != nil && latest.ReleaseDate != nil {
 		age := today.Sub(*latest.ReleaseDate)
 		years := func(n int) time.Duration { return time.Duration(n) * 365 * 24 * time.Hour }
@@ -94,18 +100,18 @@ func paceSignals(pace metrics.ReleasePaceMetrics, today time.Time) []Signal {
 		case age > years(staleYearsHard):
 			signals = append(signals, Signal{
 				"staleness", -40,
-				fmt.Sprintf("latest release %s is %d years old — likely unmaintained",
+				fmt.Sprintf("most recent release %s is %d years old — likely unmaintained",
 					latest.Version, int(age.Hours()/24/365)),
 			})
 		case age > years(staleYearsSoft):
 			signals = append(signals, Signal{
 				"staleness", -20,
-				fmt.Sprintf("latest release %s is over %d years old", latest.Version, staleYearsSoft),
+				fmt.Sprintf("most recent release %s is over %d years old", latest.Version, staleYearsSoft),
 			})
 		default:
 			signals = append(signals, Signal{
 				"staleness", 0,
-				fmt.Sprintf("latest release %s is %d days old", latest.Version, int(age.Hours()/24)),
+				fmt.Sprintf("most recent release %s is %d days old", latest.Version, int(age.Hours()/24)),
 			})
 		}
 		if first := pace.FirstRelease; age < time.Duration(youngPackageDays)*24*time.Hour &&

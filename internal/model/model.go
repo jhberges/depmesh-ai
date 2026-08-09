@@ -18,6 +18,7 @@ const (
 	PyPI  Ecosystem = "pypi"
 	Maven Ecosystem = "maven"
 	NuGet Ecosystem = "nuget"
+	Cargo Ecosystem = "cargo"
 )
 
 // Ecosystems is every ecosystem depmesh-ai can vet, oldest support first.
@@ -25,7 +26,7 @@ const (
 // accepts exactly these, the CLI usage and the MCP tool schema render them,
 // and adding an ecosystem means appending here rather than remembering four
 // separate places that drifted apart.
-var Ecosystems = []Ecosystem{NPM, PyPI, Maven, NuGet}
+var Ecosystems = []Ecosystem{NPM, PyPI, Maven, NuGet, Cargo}
 
 // EcosystemStrings is Ecosystems as plain strings, for JSON schemas.
 func EcosystemStrings() []string {

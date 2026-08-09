@@ -113,6 +113,7 @@ Example output:
 | PyPI | `pypi` | Python | pypi.org | `requests` |
 | Maven Central | `maven` | Java, Kotlin, Scala | repo1.maven.org | `groupId:artifactId` |
 | NuGet | `nuget` | C#, F#, VB.NET | api.nuget.org | `Newtonsoft.Json` (case-insensitive) |
+| crates.io | `cargo` | Rust | crates.io | `serde` |
 
 Every one is read from the registry that actually resolves the dependency, so
 existence is authoritative rather than inferred. Which signals a given
@@ -381,7 +382,7 @@ so an internal endpoint is a few lines of code to implement.
 | release pace | registry version history | ported from the original DepMesh `ArtifactReleasePaceMetrics` |
 | staleness | latest release date | soft penalty >2y, hard >5y |
 | package age | first release date | <60 days old = slopsquatting-risk flag |
-| deprecation | npm `deprecated` / PyPI yanked / NuGet `deprecation` | heavy penalty |
+| deprecation | npm `deprecated` / PyPI yanked / NuGet `deprecation` / fully-yanked crate | heavy penalty |
 | maintainers | registry metadata | bus-factor ≤1 penalized |
 | license | registry / POM / deps.dev | missing or copyleft flagged |
 | advisories | deps.dev (optional) | degrades gracefully when unreachable |

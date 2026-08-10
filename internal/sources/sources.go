@@ -27,6 +27,8 @@ func Gather(ecosystem model.Ecosystem, name, version string, enrich bool) (*mode
 		facts, err = fetchPyPI(name, version)
 	case model.Maven:
 		facts, err = fetchMaven(name, version)
+	case model.NuGet:
+		facts, err = fetchNuGet(name, version)
 	}
 	if err != nil {
 		return nil, err

@@ -267,6 +267,19 @@ arbitrary version by name, we can locate `facts.LatestVersion` too and anchor
 staleness there instead of at index 0. Worth doing in the same phase, because
 every cadence number above uses `refs[0]` as the far end of the lag.
 
+**One exception, and it matters.** A newer *prerelease* above the declared
+latest is the opposite situation from a backport. Adapters that can tell a
+prerelease apart (NuGet does) report the newest *stable* version as the latest,
+because that is what a reader installs and what advisories are looked up
+against — so a `3.0.0-beta1` published last week above a stable `2.0.0` is not a
+backport, it is someone actively working. Re-anchoring there would declare a
+busy project stale.
+
+The two cases are indistinguishable by date, and separating them properly needs
+version ordering, which is P3. What is available now is enough: a **stable**
+release above the declared latest is a backport, a **prerelease** above it is
+activity. So the anchor moves only when the date-newest release is stable.
+
 ### Two guards
 
 `CalculateAveragePace(refs, i, i)` returns `0` — divisor clamps to 1 and the

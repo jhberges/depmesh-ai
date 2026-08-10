@@ -11,12 +11,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jhberges/depmesh-ai/internal/api"
 	"github.com/jhberges/depmesh-ai/internal/audit"
 	"github.com/jhberges/depmesh-ai/internal/bytesize"
 	"github.com/jhberges/depmesh-ai/internal/gate"
 	"github.com/jhberges/depmesh-ai/internal/mcp"
+	"github.com/jhberges/depmesh-ai/internal/model"
 	"github.com/jhberges/depmesh-ai/internal/sources"
 	"github.com/jhberges/depmesh-ai/internal/vet"
 )
@@ -30,7 +32,8 @@ func usage() {
 audit rotation (any surface): --audit-max-size 100MB, --audit-keep 5.
 0 means never rotate; both default from the policy file when set there.
 
-ecosystems: npm | pypi | maven (maven packages: groupId:artifactId)
+ecosystems: `+strings.Join(model.EcosystemStrings(), " | ")+`
+            (maven packages: groupId:artifactId)
 
 policy is auto-discovered from ./depmesh.policy.json or $DEPMESH_POLICY;
 --policy makes it explicit and errors when the file is missing.

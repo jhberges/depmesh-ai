@@ -132,15 +132,15 @@ func stalenessSignal(pace metrics.ReleasePaceMetrics, latest *model.ReleaseRef, 
 	switch delta := min(absolute, cadence); {
 	case delta == 0:
 		return Signal{"staleness", 0,
-			fmt.Sprintf("latest release %s is %d days old", latest.Version, days)}
+			fmt.Sprintf("most recent release %s is %d days old", latest.Version, days)}
 	case delta == cadence && cadenceReason != "":
 		return Signal{"staleness", delta, cadenceReason}
 	case age > years(staleYearsHard):
 		return Signal{"staleness", delta,
-			fmt.Sprintf("latest release %s is %d years old — likely unmaintained", latest.Version, days/365)}
+			fmt.Sprintf("most recent release %s is %d years old — likely unmaintained", latest.Version, days/365)}
 	default:
 		return Signal{"staleness", delta,
-			fmt.Sprintf("latest release %s is over %d years old", latest.Version, staleYearsSoft)}
+			fmt.Sprintf("most recent release %s is over %d years old", latest.Version, staleYearsSoft)}
 	}
 }
 
@@ -160,6 +160,13 @@ func paceSignals(pace metrics.ReleasePaceMetrics, today time.Time) []Signal {
 		})
 	}
 
+	// The version named here is whatever was published most recently, *except*
+	// when that is a stable release the adapter did not call the latest — see
+	// metrics.BuildReleasePaceAnchored. Adapters that can tell a pre-release
+	// apart report the newest stable version as the latest, because that is
+	// what a reader would install and what advisories are looked up against.
+	// Staleness asks a different question — has anyone touched this at all —
+	// so a fresh beta still counts.
 	if latest := pace.LatestRelease; latest != nil && latest.ReleaseDate != nil {
 		age := today.Sub(*latest.ReleaseDate)
 		signals = append(signals, stalenessSignal(pace, latest, age, today))

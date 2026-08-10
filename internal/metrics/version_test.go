@@ -198,3 +198,30 @@ func TestVersionPaceWithoutReleaseDates(t *testing.T) {
 		t.Fatalf("lag reported without dates: %+v", vp)
 	}
 }
+
+func TestAnchorKeepsAFreshPrereleaseAsActivity(t *testing.T) {
+	// The NuGet shape: LatestVersion is the newest *stable*, because that is
+	// what a reader installs and what advisories are looked up against. But a
+	// beta published last week is someone actively working, and staleness asks
+	// whether anyone has touched this at all — so the anchor must stay on the
+	// prerelease rather than jumping back to the older stable release.
+	refs := []model.ReleaseRef{
+		ref("3.0.0-beta1", "2024-05-20"),
+		ref("2.0.0", "2021-06-01"),
+		ref("1.0.0", "2019-03-04"),
+	}
+	if got := BuildReleasePaceAnchored(refs, "2.0.0").LatestRelease.Version; got != "3.0.0-beta1" {
+		t.Fatalf("anchored latest = %q, want the fresh prerelease to count as activity", got)
+	}
+	// Whereas a *stable* release above the declared latest is a backport, and
+	// the anchor does move. The two cases are indistinguishable by date; this
+	// is the only thing separating them without version ordering.
+	backport := []model.ReleaseRef{
+		ref("3.1.5", "2024-05-20"),
+		ref("4.0.0", "2024-05-01"),
+		ref("3.1.4", "2024-01-01"),
+	}
+	if got := BuildReleasePaceAnchored(backport, "4.0.0").LatestRelease.Version; got != "4.0.0" {
+		t.Fatalf("anchored latest = %q, want the backport ignored", got)
+	}
+}

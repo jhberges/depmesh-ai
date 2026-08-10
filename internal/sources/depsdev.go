@@ -18,6 +18,7 @@ var depsDevSystem = map[model.Ecosystem]string{
 	model.NPM:   "npm",
 	model.PyPI:  "pypi",
 	model.Maven: "maven",
+	model.NuGet: "nuget",
 }
 
 type depsDevVersion struct {

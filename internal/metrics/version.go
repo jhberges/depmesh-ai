@@ -99,12 +99,28 @@ func IndexOf(refs []model.ReleaseRef, version string) int {
 // fresher than it is, and a version's lag measured against one is measured
 // against the wrong end of the history.
 //
+// A newer *prerelease* is the opposite case, and must not be re-anchored away.
+// Adapters that can tell a prerelease apart report the newest stable version as
+// the latest, because that is what a reader installs and what advisories are
+// looked up against — so a fresh 5.0.0-beta1 sitting above a stable 4.9.0 is
+// not a backport, it is someone actively working. Re-anchoring there would
+// declare a busy project stale.
+//
+// Both cases look identical by date, and telling them apart properly needs
+// version ordering, which this package does not have. What it does have is
+// enough: a *stable* release above the declared latest is a backport, and a
+// prerelease above it is activity. So the anchor moves only when the date-newest
+// release is stable.
+//
 // The pace figures are deliberately unchanged — "the gaps between the last
 // three publishes" remains the right reading of cadence whichever branch those
 // publishes came from.
 func BuildReleasePaceAnchored(refs []model.ReleaseRef, latestVersion string) ReleasePaceMetrics {
 	m := BuildReleasePace(refs)
 	if m.State == NoData || latestVersion == "" {
+		return m
+	}
+	if len(refs) > 0 && model.IsPrerelease(refs[0].Version) {
 		return m
 	}
 	if idx := IndexOf(refs, latestVersion); idx >= 0 {

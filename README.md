@@ -105,6 +105,21 @@ Example output:
     assistant suggested it, this is likely a hallucinated (slopsquattable) name
 ```
 
+## Ecosystems
+
+| Ecosystem | Argument | Languages | Registry | Package name |
+|---|---|---|---|---|
+| npm | `npm` | JavaScript, TypeScript | registry.npmjs.org | `express`, `@types/node` |
+| PyPI | `pypi` | Python | pypi.org | `requests` |
+| Maven Central | `maven` | Java, Kotlin, Scala | repo1.maven.org | `groupId:artifactId` |
+| NuGet | `nuget` | C#, F#, VB.NET | api.nuget.org | `Newtonsoft.Json` (case-insensitive) |
+
+Every one is read from the registry that actually resolves the dependency, so
+existence is authoritative rather than inferred. Which signals a given
+ecosystem can fill depends on what its registry publishes — see
+[Signals](#signals); an ecosystem that does not expose maintainers leaves the
+bus-factor signal out rather than guessing at it.
+
 ## As an MCP server
 
 Run `depmesh-ai serve` and the tool `vet_dependency` becomes available to any
@@ -366,13 +381,14 @@ so an internal endpoint is a few lines of code to implement.
 | release pace | registry version history | ported from the original DepMesh `ArtifactReleasePaceMetrics` |
 | staleness | latest release date | soft penalty >2y, hard >5y |
 | package age | first release date | <60 days old = slopsquatting-risk flag |
-| deprecation | npm `deprecated` / PyPI yanked | heavy penalty |
+| deprecation | npm `deprecated` / PyPI yanked / NuGet `deprecation` | heavy penalty |
 | maintainers | registry metadata | bus-factor ≤1 penalized |
 | license | registry / POM / deps.dev | missing or copyleft flagged |
 | advisories | deps.dev (optional) | degrades gracefully when unreachable |
 
-Data sources are layered: the package's own registry (npm, PyPI, Maven
-Central) is authoritative and always consulted; [deps.dev](https://deps.dev)
+Data sources are layered: the package's own registry (see
+[Ecosystems](#ecosystems)) is authoritative and always consulted;
+[deps.dev](https://deps.dev)
 enriches with advisories and licenses when reachable and is silently skipped
 when not (common behind corporate egress policies). A degraded source is
 reported in the output rather than guessed around.
@@ -382,12 +398,16 @@ reported in the output rather than guessed around.
 Working prototype. Known gaps: Maven license detection doesn't follow parent
 POMs (deps.dev covers this when reachable); no OSV fallback for advisories yet.
 
-Staleness no longer measures from the most recent publish across all dist-tags
-— it anchors on the latest release, so a patch backported to an old major
-doesn't make an abandoned project look fresh. It is also **cadence-relative**:
-"quiet" is judged against the project's own average release gap, which flags a
-weekly-release project that has gone silent for a few months long before a
-fixed two-year threshold would, while still applying that threshold as a floor.
+Staleness no longer measures from whatever was published most recently: a
+*stable* release that the registry doesn't call the latest is a backport, and a
+patch on an old major no longer makes an abandoned project look fresh. A newer
+**prerelease** still counts, though — staleness asks whether anyone has touched
+the project at all, and a beta shipped last week is someone working.
+
+Staleness is also **cadence-relative**: "quiet" is judged against the project's
+own average release gap, which flags a weekly-release project that has gone
+silent for a few months long before a fixed two-year threshold would, while
+still applying that threshold as a floor.
 
 The engine can also vet a **specific version** — advisories, license, yanks,
 and how far behind the pin is, measured in the project's own release intervals

@@ -5,6 +5,7 @@ package gate_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -125,20 +126,50 @@ func TestGarbageResponseIsAnError(t *testing.T) {
 // The wire format carries no version yet. Answering a version-level question
 // with a package-level verdict would hand back approval for something that was
 // never examined, so a delegating gate refuses rather than drops the version.
-func TestDelegatingGateRefusesAVersionItCannotForward(t *testing.T) {
-	asked := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		asked = true
+// The version has to survive delegation intact, and be visibly attached to
+// the answer that comes back: a developer machine that cannot reach npm asks
+// exactly the question its user asked.
+func TestDelegatedVersionReachesTheGate(t *testing.T) {
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"verdict": {"ecosystem":"npm","package":"express",
+		  "version":"4.18.2","advice":"ADOPT","score":90}}`))
 	}))
 	defer server.Close()
 
 	developer := &gate.Gate{Upstream: server.URL}
-	if _, err := developer.Vet(audit.Local("cli"), "npm", "express", "4.18.2", true); err == nil {
-		t.Fatal("a version was silently dropped on the way to the gate")
+	outcome, err := developer.Vet(audit.Local("cli"), "npm", "express", "4.18.2", true)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if asked {
-		t.Fatal("the gate was asked a question that omitted the version")
+	if !strings.Contains(query, "version=4.18.2") {
+		t.Errorf("query = %q, want the version forwarded", query)
+	}
+	if outcome.Verdict.Version != "4.18.2" {
+		t.Errorf("verdict version = %q, want 4.18.2", outcome.Verdict.Version)
+	}
+}
+
+// A gate from before version-aware vetting ignores the parameter and answers
+// about the package. That answer is approval for something never examined, so
+// it must not be handed back as though the question had been asked.
+func TestDelegatedVersionDroppedByAnOlderGateIsAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"verdict": {"ecosystem":"npm","package":"express",
+		  "advice":"ADOPT","score":90}}`))
+	}))
+	defer server.Close()
+
+	developer := &gate.Gate{Upstream: server.URL}
+	outcome, err := developer.Vet(audit.Local("cli"), "npm", "express", "4.18.2", true)
+	if err == nil {
+		t.Fatalf("outcome = %+v, want an error naming the gate that must be upgraded", outcome)
+	}
+	if !strings.Contains(err.Error(), "upgraded") {
+		t.Errorf("error = %q, want it to say the gate needs upgrading", err)
 	}
 }
 

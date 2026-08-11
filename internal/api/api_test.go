@@ -1,6 +1,8 @@
 package api
 
 import (
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -74,5 +76,53 @@ func TestOverlongIdentityIsTruncated(t *testing.T) {
 	request.Header.Set(upstream.ActorHeader, strings.Repeat("é", 500))
 	if got := caller(request).Actor; len([]rune(got)) != maxIdentityLength {
 		t.Fatalf("actor kept %d runes, want %d", len([]rune(got)), maxIdentityLength)
+	}
+}
+
+// The version travels as a query parameter and must arrive at the gate. The
+// gate under test delegates onward, so nothing here reaches a registry.
+func TestVersionQueryReachesTheGate(t *testing.T) {
+	var query string
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"verdict":{"ecosystem":"npm","package":"express",
+		  "version":"4.18.2","advice":"ADOPT","score":90}}`))
+	}))
+	defer origin.Close()
+
+	server := httptest.NewServer(Handler(&gate.Gate{Upstream: origin.URL}))
+	defer server.Close()
+
+	response, err := server.Client().Get(server.URL + "/v1/vet/npm/express?version=4.18.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("got %d, want 200", response.StatusCode)
+	}
+	if !strings.Contains(query, "version=4.18.2") {
+		t.Errorf("gate saw query %q, want the version", query)
+	}
+}
+
+// A range is refused rather than resolved, and the refusal happens before any
+// registry is contacted — which is what makes this test safe to run offline.
+func TestVersionRangeIs400(t *testing.T) {
+	server := httptest.NewServer(Handler(&gate.Gate{}))
+	defer server.Close()
+
+	response, err := server.Client().Get(server.URL + "/v1/vet/npm/express?version=%5E4.18.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 400 {
+		t.Fatalf("got %d, want 400", response.StatusCode)
+	}
+	body, _ := io.ReadAll(response.Body)
+	if !strings.Contains(string(body), "constraint") {
+		t.Errorf("body = %s, want it to say a constraint was passed", body)
 	}
 }

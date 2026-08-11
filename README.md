@@ -88,8 +88,27 @@ depmesh-ai vet npm express
 depmesh-ai vet pypi requests --json
 depmesh-ai vet maven org.apache.commons:commons-lang3
 
+# Ask about the exact version you are about to pin, not just the package.
+# Paste the coordinate your build tool printed:
+depmesh-ai vet maven org.springframework.boot:spring-boot-starter-parent:3.2.2
+depmesh-ai vet npm express@4.18.2
+depmesh-ai vet pypi requests==2.31.0
+depmesh-ai vet go github.com/BurntSushi/toml@v1.3.2
+depmesh-ai vet npm express --version 4.18.2   # the explicit form
+
 # Exit code: 0 = ADOPT/CAUTION, 1 = REJECT, 2 = registry unreachable
 ```
+
+A version is what a build file actually contains, and it is where the
+answers differ: `express` is a healthy package, while `express@4.18.2` carries
+two known advisories. The verdict names which half the problem is in — a stale
+pin on a healthy package means *upgrade*, an abandoned package on a current pin
+means *drop*.
+
+Ranges are refused rather than resolved (`^4.18.0`, `[1.0,2.0)`, `latest`):
+pass the version your build tool resolved. It has already done that work, and
+guessing at it in a tool with no dependencies would be a semver implementation
+per ecosystem.
 
 The installer verifies the release checksum, asks once whether you want to
 share hallucinated package names (see [Telemetry](#telemetry-opt-in-off-by-default)),
@@ -107,17 +126,20 @@ Example output:
 
 ## Ecosystems
 
-| Ecosystem | Argument | Languages | Registry | Package name |
-|---|---|---|---|---|
-| npm | `npm` | JavaScript, TypeScript | registry.npmjs.org | `express`, `@types/node` |
-| PyPI | `pypi` | Python | pypi.org | `requests` |
-| Maven Central | `maven` | Java, Kotlin, Scala | repo1.maven.org | `groupId:artifactId` |
-| NuGet | `nuget` | C#, F#, VB.NET | api.nuget.org | `Newtonsoft.Json` (case-insensitive) |
-| crates.io | `cargo` | Rust | crates.io | `serde` |
-| Go modules | `go` | Go | proxy.golang.org | `github.com/pkg/errors` (full module path) |
-| Packagist | `packagist` | PHP | repo.packagist.org | `vendor/package` |
-| pub.dev | `pub` | Dart, Flutter | pub.dev | `http` |
-| Hex | `hex` | Elixir, Erlang | hex.pm | `phoenix` |
+| Ecosystem | Argument | Languages | Registry | Package name | With a version |
+|---|---|---|---|---|---|
+| npm | `npm` | JavaScript, TypeScript | registry.npmjs.org | `express`, `@types/node` | `express@4.18.2` |
+| PyPI | `pypi` | Python | pypi.org | `requests` | `requests==2.31.0` |
+| Maven Central | `maven` | Java, Kotlin, Scala | repo1.maven.org | `groupId:artifactId` | `groupId:artifactId:version` |
+| NuGet | `nuget` | C#, F#, VB.NET | api.nuget.org | `Newtonsoft.Json` (case-insensitive) | `Newtonsoft.Json@13.0.3` |
+| crates.io | `cargo` | Rust | crates.io | `serde` | `serde@1.0.197` |
+| Go modules | `go` | Go | proxy.golang.org | `github.com/pkg/errors` (full module path) | `github.com/pkg/errors@v0.9.1` |
+| Packagist | `packagist` | PHP | repo.packagist.org | `vendor/package` | `vendor/package:2.0.0` |
+| pub.dev | `pub` | Dart, Flutter | pub.dev | `http` | `http:1.2.0` |
+| Hex | `hex` | Elixir, Erlang | hex.pm | `phoenix` | `phoenix@1.7.10` |
+
+The version spelling is each ecosystem's own, because that is the form people
+paste; `--version` works everywhere and wins where both are given.
 
 Every one is read from the registry that actually resolves the dependency, so
 existence is authoritative rather than inferred. Which signals a given
@@ -130,6 +152,12 @@ bus-factor signal out rather than guessing at it.
 Run `depmesh-ai serve` and the tool `vet_dependency` becomes available to any
 MCP client. The agent can then vet every dependency it is about to install, and
 gets told explicitly when a package name does not exist.
+
+This is the surface where the version matters most: it is the one place the
+version is known *before* anything is written to a build file. The tool takes
+an optional `version` argument and its description tells the agent to pass the
+one it is about to pin — and a coordinate handed to `package` (`express@4.18.2`)
+is split rather than looked up as a name, since that is what an agent pastes.
 
 For one project, drop this in `.mcp.json` at the repo root:
 
@@ -200,10 +228,16 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
   "min_score": 70,
   "fail_on": "caution",
   "licenses": { "allow": ["MIT", "Apache", "BSD", "ISC"], "require_declared": true },
+  "max_releases_behind": 20,
+  "max_intervals_behind": 8,
+  "allow_prerelease": false,
+  "require_latest": false,
   "exceptions": [
     { "ecosystem": "maven", "package": "org.apache.commons:commons-lang3",
       "reason": "Apache-2.0 via parent POM, approved by security architecture",
-      "expires": "2027-06-30" }
+      "expires": "2027-06-30" },
+    { "ecosystem": "npm", "package": "left-pad", "version": "1.3.0",
+      "reason": "reviewed by AppSec, ticket SEC-4711", "expires": "2027-01-31" }
   ],
   "audit_log": "/var/log/depmesh/decisions.jsonl"
 }
@@ -211,7 +245,16 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
 
 - License rules are case-insensitive substring matches; `deny` beats `allow`.
 - Exceptions are explicit, justified, and **expire** — they must be renewed,
-  not immortal. Expired or malformed exceptions fail closed.
+  not immortal. Expired or malformed exceptions fail closed. An exception with
+  a `version` covers that release alone; without one it covers the package, as
+  it always has.
+- The four version rules judge the pin and are **inert when no version was
+  asked about**, so one policy file serves both kinds of caller.
+  `max_intervals_behind` is the one to reach for across ecosystems: twenty
+  releases means something different for a weekly project than a yearly one,
+  and "eight of this project's own release intervals" does not. It is also
+  inert where a project has no measurable cadence — an unmeasurable pin is not
+  a violated one.
 - The CLI exit code, the MCP tool output, and the API status code all follow
   the policy decision when one is configured.
 
@@ -219,7 +262,8 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
 
 Set `audit_log` in the policy (or `--audit-log`) and every decision — from the
 CLI, the MCP server, or the API — appends one JSON line: timestamp, actor,
-surface, package, verdict, score, policy result, degraded sources. Ready for
+surface, package, the version if one was asked about (`package_version`),
+verdict, score, policy result, degraded sources. Ready for
 Splunk/ELK ingestion; if the audit write fails, the decision is withheld
 (fail closed).
 
@@ -262,7 +306,13 @@ curl localhost:8385/v1/vet/npm/express
 ```
 
 Package paths may contain slashes and colons (`/v1/vet/npm/@types/node`,
-`/v1/vet/maven/org.apache.commons:commons-lang3`).
+`/v1/vet/maven/org.apache.commons:commons-lang3`). A version goes in the query
+string rather than the path — `?version=4.18.2` — precisely because the path is
+greedy enough to swallow a coordinate whole:
+
+```bash
+curl 'localhost:8385/v1/vet/npm/express?version=4.18.2'
+```
 
 ### Pointing developers at it
 
@@ -416,11 +466,17 @@ own average release gap, which flags a weekly-release project that has gone
 silent for a few months long before a fixed two-year threshold would, while
 still applying that threshold as a floor.
 
-The engine can also vet a **specific version** in every supported ecosystem —
-advisories, license, yanks, and how far behind the pin is, measured in the
-project's own release intervals — but no surface exposes it yet: the CLI, MCP server, and API all still ask
-package-level questions. See [docs/VERSION-VETTING.md](docs/VERSION-VETTING.md)
-for the design and what remains.
+**Version-aware vetting** is live on every surface and in every ecosystem: a
+verdict can now be about the coordinate in the build file rather than about the
+package around it — advisories, license, yanks, and how far behind the pin is,
+measured in the project's own release intervals. See
+[docs/VERSION-VETTING.md](docs/VERSION-VETTING.md) for the design.
+
+What is left there is P3: "16 releases published since" is the claim the data
+supports today, and turning it into a true "releases behind" count needs
+version ordering per ecosystem. Parallel major branches are why — a project
+shipping 3.x patches after 4.0.0 has a date-ordered history that interleaves
+them, and some of those releases are not ahead of the pin at all.
 
 ## Heritage
 

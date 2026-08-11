@@ -41,7 +41,12 @@ type Request struct {
 	Hostname  string
 	Ecosystem string
 	Package   string
-	Enrich    bool
+	// Version is the exact release to ask about, empty for a package-level
+	// question. It travels as a query parameter rather than a path segment
+	// because the gate's route ends in {package...}, which already swallows
+	// the slashes and colons a coordinate is made of.
+	Version string
+	Enrich  bool
 }
 
 // Normalize validates a gate address and trims its trailing slash. It is
@@ -70,8 +75,15 @@ func Vet(request Request) ([]byte, error) {
 	// The package segment keeps its slashes and colons: the gate's route ends
 	// in {package...}, which matches npm scopes and maven coordinates whole.
 	endpoint := request.Base + "/v1/vet/" + request.Ecosystem + "/" + request.Package
+	query := url.Values{}
 	if !request.Enrich {
-		endpoint += "?enrich=false"
+		query.Set("enrich", "false")
+	}
+	if request.Version != "" {
+		query.Set("version", request.Version)
+	}
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
 	}
 	httpRequest, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {

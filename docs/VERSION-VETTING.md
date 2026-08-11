@@ -427,7 +427,7 @@ actually want, and it stops covering the next release automatically.
 |---|---|---|
 | **P0** ✅ | `VersionFacts` through the sources; deps.dev one-liner; per-version license / yank / deprecation; tri-state version existence; `version-*` signals | 1–2d |
 | **P1** ✅ | Cadence metrics (§5), `LatestVersion` anchor fix, prerelease/yank filtering of the gap count | 1–2d |
-| **P2** | CLI / API / MCP / upstream / audit / policy plumbing; README + this doc | 1–2d |
+| **P2** ✅ | CLI / API / MCP / upstream / audit / policy plumbing; README + this doc | 1–2d |
 | **P3** | Loose version comparator → true "versions behind", major-version distance, PEP 440 normalization | 1d |
 
 P0 and P1 are self-contained engine work and deliver most of the value on the
@@ -443,13 +443,30 @@ its own (§4). One thing the sketch left open is settled: a lookup miss is
 confirmed against a per-version endpoint before it is ever reported as
 non-existence (§2).
 
-Until P2 lands, no surface can pass a version — `gate.Vet` takes one, and the
-CLI, MCP server, and API all pass empty. What *is* live on today's surfaces is
-the package-level half of P1: staleness is now cadence-relative, and it is
-anchored on `dist-tags.latest` rather than on whatever was published most
-recently. A delegating gate (`--upstream`) refuses a version outright rather
-than forwarding a request the wire format cannot carry, because a package-level
-answer to a version-level question is approval for something never examined.
+**P2 has landed too.** Every surface can pass a version, in the spelling its
+callers actually use, and three things came out slightly differently from the
+sketch above:
+
+- **The CLI's `--version` flag sits next to a `version` subcommand** that prints
+  the tool's own build version. There is no parse conflict — `vet` has its own
+  flag set — but `depmesh-ai vet --version` now fails asking for an argument
+  instead of printing a build version, so the usage text says which is which.
+- **The MCP server splits a coordinate out of `package` as well.** The schema
+  offers `version` separately, but an agent pastes what it is about to write
+  into a build file, and looking `express@4.18.2` up as a package name would
+  report a real dependency as a hallucinated one.
+- **Delegation checks that the answer is about the version asked.** The wire
+  format now carries one, but a gate from before this change ignores it and
+  answers about the package — which is approval for something never examined.
+  A verdict that comes back without the version is an error naming the gate
+  that needs upgrading, rather than a quiet package-level answer. This replaces
+  the outright refusal that stood here while the wire format could not carry a
+  version at all.
+
+`model.SplitCoordinate` owns the spellings, since "how this ecosystem writes a
+coordinate" belongs with the ecosystem list rather than in a surface. It never
+validates: a range survives it intact and is refused once, by `sources.Gather`,
+rather than second-guessed into a name nobody asked about.
 
 ## 8. What this does not do
 

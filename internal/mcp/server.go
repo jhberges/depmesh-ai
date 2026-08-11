@@ -37,7 +37,11 @@ var toolList = []map[string]any{
 			"advisories. Call this before adding any new dependency to a project. " +
 			"Returns ADOPT, CAUTION, or REJECT with per-signal reasons, plus the " +
 			"organization's policy decision when a policy is configured — a policy " +
-			"BLOCK means the dependency must not be added.",
+			"BLOCK means the dependency must not be added. " +
+			"Always pass 'version' when you are about to pin one: advisories, " +
+			"licenses and yanks apply to specific releases, so a healthy package " +
+			"can still have an unsafe version, and a stale pin on a healthy " +
+			"package means upgrade rather than drop.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -51,6 +55,13 @@ var toolList = []map[string]any{
 					"description": "Package name, exactly as it appears on the registry. " +
 						"For maven use groupId:artifactId, e.g. " +
 						"org.apache.commons:commons-lang3",
+				},
+				"version": map[string]any{
+					"type": "string",
+					"description": "Optional. The exact version about to be pinned, " +
+						"e.g. 4.18.2. Must be one resolved version, not a range: " +
+						"'^4.18.0', '[1.0,2.0)' and 'latest' are refused rather than " +
+						"resolved. Omit it to ask about the package alone.",
 				},
 			},
 			"required":             []string{"ecosystem", "package"},
@@ -122,6 +133,7 @@ func callTool(g *gate.Gate, req *request) *response {
 		Arguments struct {
 			Ecosystem string `json:"ecosystem"`
 			Package   string `json:"package"`
+			Version   string `json:"version"`
 		} `json:"arguments"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -131,18 +143,30 @@ func callTool(g *gate.Gate, req *request) *response {
 		return rpcErr(req.ID, -32602, "unknown tool: "+params.Name)
 	}
 
-	text, isError := runVet(g, params.Arguments.Ecosystem, params.Arguments.Package)
+	text, isError := runVet(g, params.Arguments.Ecosystem, params.Arguments.Package, params.Arguments.Version)
 	return result(req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
 		"isError": isError,
 	})
 }
 
-func runVet(g *gate.Gate, ecosystem, name string) (text string, isError bool) {
+func runVet(g *gate.Gate, ecosystem, name, version string) (text string, isError bool) {
 	if ecosystem == "" || name == "" {
 		return "Invalid arguments: both 'ecosystem' and 'package' are required", true
 	}
-	outcome, err := g.Vet(audit.Local("mcp"), ecosystem, name, "", true)
+	// Agents paste what they are about to write into a build file, which is a
+	// coordinate as often as it is a bare name. Reading the version off it
+	// costs nothing and stops "express@4.18.2" being looked up as a package
+	// name and reported as a hallucination.
+	if eco, err := model.ParseEcosystem(ecosystem); err == nil {
+		parsed, suffix := model.SplitCoordinate(eco, name)
+		if version == "" {
+			name, version = parsed, suffix
+		} else {
+			name = parsed
+		}
+	}
+	outcome, err := g.Vet(audit.Local("mcp"), ecosystem, name, version, true)
 	var unavailable *sources.UnavailableError
 	switch {
 	case errors.As(err, &unavailable):

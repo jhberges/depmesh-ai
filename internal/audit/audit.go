@@ -18,17 +18,22 @@ import (
 )
 
 type Record struct {
-	Time      string         `json:"time"`
-	Actor     string         `json:"actor"`
-	Hostname  string         `json:"hostname,omitempty"`
-	Surface   string         `json:"surface"` // cli | mcp | api
-	Ecosystem string         `json:"ecosystem"`
-	Package   string         `json:"package"`
-	Advice    string         `json:"advice"`
-	Score     int            `json:"score"`
-	Policy    *policy.Result `json:"policy,omitempty"`
-	Degraded  []string       `json:"degraded_sources,omitempty"`
-	Version   string         `json:"tool_version"`
+	Time      string `json:"time"`
+	Actor     string `json:"actor"`
+	Hostname  string `json:"hostname,omitempty"`
+	Surface   string `json:"surface"` // cli | mcp | api
+	Ecosystem string `json:"ecosystem"`
+	Package   string `json:"package"`
+	// PackageVersion is the release that was asked about, absent when the
+	// question was package-level. It is deliberately not called Version:
+	// Record.Version is this tool's own build version, and reusing the name
+	// would overwrite it in every record written.
+	PackageVersion string         `json:"package_version,omitempty"`
+	Advice         string         `json:"advice"`
+	Score          int            `json:"score"`
+	Policy         *policy.Result `json:"policy,omitempty"`
+	Degraded       []string       `json:"degraded_sources,omitempty"`
+	Version        string         `json:"tool_version"`
 }
 
 // Caller identifies who asked. Actor and Hostname empty means "this process,
@@ -90,17 +95,18 @@ func (l Log) Write(caller Caller, version string, v *vet.Verdict, policyResult *
 	}
 	caller = caller.Resolve()
 	record := Record{
-		Time:      time.Now().UTC().Format(time.RFC3339),
-		Actor:     caller.Actor,
-		Hostname:  caller.Hostname,
-		Surface:   caller.Surface,
-		Ecosystem: v.Ecosystem,
-		Package:   v.Package,
-		Advice:    string(v.Advice),
-		Score:     v.Score,
-		Policy:    policyResult,
-		Degraded:  v.Degraded,
-		Version:   version,
+		Time:           time.Now().UTC().Format(time.RFC3339),
+		Actor:          caller.Actor,
+		Hostname:       caller.Hostname,
+		Surface:        caller.Surface,
+		Ecosystem:      v.Ecosystem,
+		Package:        v.Package,
+		PackageVersion: v.Version,
+		Advice:         string(v.Advice),
+		Score:          v.Score,
+		Policy:         policyResult,
+		Degraded:       v.Degraded,
+		Version:        version,
 	}
 	line, err := json.Marshal(record)
 	if err != nil {

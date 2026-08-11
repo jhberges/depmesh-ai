@@ -84,6 +84,22 @@ type Verdict struct {
 	Facts       *model.PackageFacts        `json:"-"`
 }
 
+// RequestedIsLatest reports whether the version asked about is the latest
+// release. It reads the source layer's answer where there is one, because that
+// comparison was made against the registry's own spelling of both versions —
+// "1.0" and "1.0.0" can be the same release, and only the source layer knows.
+//
+// The string comparison is the fallback for a verdict that arrived over the
+// wire from a gate, where the facts did not travel. It is stricter than the
+// source layer's answer, never looser, so it can report a pin as not-latest
+// that is; it cannot wave one through as latest that is not.
+func (v *Verdict) RequestedIsLatest() bool {
+	if v.Facts != nil && v.Facts.Requested != nil {
+		return v.Facts.Requested.IsLatest
+	}
+	return v.Version != "" && v.Version == v.LatestVersion
+}
+
 func (v *Verdict) JSON() string {
 	out, _ := json.MarshalIndent(v, "", "  ")
 	return string(out)

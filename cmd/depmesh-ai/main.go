@@ -25,7 +25,7 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  depmesh-ai vet [--json] [--no-enrich] [--policy FILE] [--audit-log FILE] [--upstream URL] <ecosystem> <package>
+  depmesh-ai vet [--json] [--no-enrich] [--version V] [--policy FILE] [--audit-log FILE] [--upstream URL] <ecosystem> <package>
   depmesh-ai serve [--policy FILE] [--audit-log FILE] [--upstream URL]
   depmesh-ai api [--listen ADDR] [--policy FILE] [--audit-log FILE]
 
@@ -34,6 +34,16 @@ audit rotation (any surface): --audit-max-size 100MB, --audit-keep 5.
 
 ecosystems: `+strings.Join(model.EcosystemStrings(), " | ")+`
             (maven packages: groupId:artifactId)
+
+a version is optional. --version V is the explicit form; a version pasted
+onto the coordinate is read the way that ecosystem's own tooling writes it:
+  maven      org.springframework.boot:spring-boot-starter-parent:3.2.2
+  npm        express@4.18.2, @types/node@20.1.0
+  pypi       requests==2.31.0
+  go/cargo/nuget/hex      example.com/mod@v1.2.3, serde@1.0.197
+  packagist/pub           monolog/monolog:2.0.0, http:1.2.0
+Ranges are refused, not resolved: pass the version your build tool resolved.
+("depmesh-ai version", with no "vet", prints this tool's own version.)
 
 policy is auto-discovered from ./depmesh.policy.json or $DEPMESH_POLICY;
 --policy makes it explicit and errors when the file is missing.
@@ -135,10 +145,31 @@ func buildGate(options gateOptions, upstreamURL string) *gate.Gate {
 	return g
 }
 
+// coordinate reads a version off the package argument, in the spelling the
+// ecosystem's own tooling uses. The explicit flag wins where both are given,
+// but the suffix is still stripped from the name — otherwise the flag would
+// silently ask about a package called "express@4.18.2".
+//
+// An unparseable ecosystem is left entirely alone: the gate reports that, with
+// the list of the ones that exist, and a split guessed from a typo would only
+// change which error comes back.
+func coordinate(ecosystem, pkg, flagVersion string) (name, version string) {
+	eco, err := model.ParseEcosystem(ecosystem)
+	if err != nil {
+		return pkg, flagVersion
+	}
+	name, suffix := model.SplitCoordinate(eco, pkg)
+	if flagVersion != "" {
+		return name, flagVersion
+	}
+	return name, suffix
+}
+
 func runVet(args []string) int {
 	flags := flag.NewFlagSet("vet", flag.ExitOnError)
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	noEnrich := flags.Bool("no-enrich", false, "skip deps.dev enrichment (advisories)")
+	pinned := flags.String("version", "", "vet this exact `version` as well as the package")
 	options := gateFlags(flags)
 	upstreamURL := upstreamFlag(flags)
 	_ = flags.Parse(args)
@@ -147,7 +178,8 @@ func runVet(args []string) int {
 	}
 	g := buildGate(options, resolveUpstream(*upstreamURL))
 
-	outcome, err := g.Vet(audit.Local("cli"), flags.Arg(0), flags.Arg(1), "", !*noEnrich)
+	name, version := coordinate(flags.Arg(0), flags.Arg(1), *pinned)
+	outcome, err := g.Vet(audit.Local("cli"), flags.Arg(0), name, version, !*noEnrich)
 	var unavailable *sources.UnavailableError
 	switch {
 	case errors.As(err, &unavailable):
@@ -206,6 +238,9 @@ func render(o *gate.Outcome) string {
 	badge := map[vet.Advice]string{vet.Adopt: "✓", vet.Caution: "⚠", vet.Reject: "✗"}
 	out := fmt.Sprintf("%s %s  %s:%s  (score %d/100)\n",
 		badge[v.Advice], v.Advice, v.Ecosystem, v.Package, v.Score)
+	if v.Version != "" {
+		out += fmt.Sprintf("  version: %s\n", v.Version)
+	}
 	if v.LatestVersion != "" {
 		out += fmt.Sprintf("  latest: %s\n", v.LatestVersion)
 	}

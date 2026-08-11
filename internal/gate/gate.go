@@ -125,15 +125,6 @@ func (g *Gate) Vet(caller audit.Caller, ecosystem, name, version string, enrich 
 }
 
 func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name, version string, enrich bool) (*Outcome, error) {
-	// The wire format has no version field yet, so a delegating client cannot
-	// ask a gate about one. Silently dropping it would return a package-level
-	// verdict to a caller who asked a version-level question — approval for
-	// something that was never examined — so refuse instead.
-	if version != "" {
-		return nil, fmt.Errorf(
-			"version-aware vetting is not available through --upstream yet: the gate at %s would be asked about %s only",
-			g.Upstream, name)
-	}
 	caller = caller.Resolve()
 	body, err := upstream.Vet(upstream.Request{
 		Base:      g.Upstream,
@@ -142,6 +133,7 @@ func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name, version string,
 		Hostname:  caller.Hostname,
 		Ecosystem: ecosystem,
 		Package:   name,
+		Version:   version,
 		Enrich:    enrich,
 	})
 	if err != nil {
@@ -153,6 +145,15 @@ func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name, version string,
 	}
 	if outcome.Verdict == nil {
 		return nil, &sources.UnavailableError{URL: g.Upstream, Err: fmt.Errorf("response carried no verdict")}
+	}
+	// An older gate ignores the version parameter and answers about the
+	// package. Returning that would be approval for something never examined,
+	// which is the one thing delegation must never do — so the mismatch is an
+	// error naming the gate that needs upgrading.
+	if version != "" && outcome.Verdict.Version == "" {
+		return nil, fmt.Errorf(
+			"the gate at %s answered about %s without the version %s — it predates version-aware vetting and must be upgraded",
+			g.Upstream, name, version)
 	}
 	return &outcome, nil
 }

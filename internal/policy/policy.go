@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jhberges/depmesh-ai/internal/bytesize"
+	"github.com/jhberges/depmesh-ai/internal/model"
 	"github.com/jhberges/depmesh-ai/internal/vet"
 )
 
@@ -30,6 +31,14 @@ type Exception struct {
 	Ecosystem string `json:"ecosystem"`
 	Package   string `json:"package"`
 	Reason    string `json:"reason"`
+	// Version, when set, narrows the exception to one release. Absent means
+	// every version, which is what an exception meant before versions existed
+	// and so keeps every policy file working unchanged.
+	//
+	// The narrow form is the more useful one: "we reviewed 2.14.1 and accepted
+	// it" is the exception people actually write, and scoping it to that
+	// release stops it silently covering the next one, which nobody reviewed.
+	Version string `json:"version,omitempty"`
 	// Expires is an ISO date (YYYY-MM-DD). An expired exception is ignored —
 	// exceptions must be re-justified, not immortal.
 	Expires string `json:"expires,omitempty"`
@@ -65,6 +74,31 @@ type Policy struct {
 	// TelemetryURL enables opt-in slopsquat telemetry (see telemetry pkg).
 	// Absent/empty = telemetry fully disabled.
 	TelemetryURL string `json:"telemetry_url,omitempty"`
+
+	// The rules below judge the requested version and are inert when the
+	// caller asked only about a package — a policy file may name them, but
+	// nothing can violate a rule about a version nobody asked about.
+
+	// MaxReleasesBehind fails a pin with more than this many releases
+	// published after it (0 disables). It counts what the registry published,
+	// excluding prereleases and yanked releases, which are not upgrade
+	// targets.
+	MaxReleasesBehind int `json:"max_releases_behind,omitempty"`
+	// MaxIntervalsBehind fails a pin further behind than this many of the
+	// project's own average release intervals (0 disables). It is the rule to
+	// reach for in a policy that spans ecosystems: twenty releases means
+	// something different for a weekly project than a yearly one, and this
+	// does not. Inert where the project has no measurable cadence — an
+	// unmeasurable pin is not a violated one.
+	MaxIntervalsBehind float64 `json:"max_intervals_behind,omitempty"`
+	// AllowPrerelease permits pinning a prerelease. Pointer so that an
+	// explicit false is distinguishable from an absent field; absent leaves
+	// prereleases to the score, which already penalizes them.
+	AllowPrerelease *bool `json:"allow_prerelease,omitempty"`
+	// RequireLatest fails any pin that is not the latest release. Blunt, and
+	// deliberately so: it is the rule for the org that has decided its
+	// dependencies track head.
+	RequireLatest bool `json:"require_latest,omitempty"`
 }
 
 type Result struct {
@@ -127,8 +161,48 @@ func (p *Policy) Apply(v *vet.Verdict, today time.Time) Result {
 	}
 
 	violations = append(violations, p.licenseViolations(v.License)...)
+	violations = append(violations, p.versionViolations(v)...)
 
 	return Result{Allowed: len(violations) == 0, Violations: violations}
+}
+
+// versionViolations applies the rules that judge the pin rather than the
+// package. They are all inert when no version was requested, which is what
+// keeps a policy file written for either half working against both.
+func (p *Policy) versionViolations(v *vet.Verdict) []string {
+	if v.Version == "" {
+		return nil
+	}
+	var violations []string
+
+	if p.RequireLatest && !v.RequestedIsLatest() {
+		latest := v.LatestVersion
+		if latest == "" {
+			latest = "unknown"
+		}
+		violations = append(violations,
+			fmt.Sprintf("version %s is not the latest release (%s) and policy requires it",
+				v.Version, latest))
+	}
+	if p.AllowPrerelease != nil && !*p.AllowPrerelease && model.IsPrerelease(v.Version) {
+		violations = append(violations,
+			fmt.Sprintf("version %s is a prerelease and policy does not allow one", v.Version))
+	}
+	if p.MaxReleasesBehind > 0 && v.VersionPace.ReleasesSince > p.MaxReleasesBehind {
+		violations = append(violations,
+			fmt.Sprintf("%d releases have been published since version %s, above the policy maximum of %d",
+				v.VersionPace.ReleasesSince, v.Version, p.MaxReleasesBehind))
+	}
+	// Normalized is the guard that keeps an unmeasurable cadence from reading
+	// as zero intervals behind, which would silently pass every pin in a
+	// project whose release history we could not date.
+	if p.MaxIntervalsBehind > 0 && v.VersionPace.Normalized &&
+		v.VersionPace.IntervalsBehind > p.MaxIntervalsBehind {
+		violations = append(violations,
+			fmt.Sprintf("version %s is %.1f of this project's release intervals behind, above the policy maximum of %.1f",
+				v.Version, v.VersionPace.IntervalsBehind, p.MaxIntervalsBehind))
+	}
+	return violations
 }
 
 func (p *Policy) licenseViolations(license string) []string {
@@ -160,6 +234,12 @@ func (p *Policy) findException(v *vet.Verdict, today time.Time) *Exception {
 	for i := range p.Exceptions {
 		e := &p.Exceptions[i]
 		if !strings.EqualFold(e.Ecosystem, v.Ecosystem) || !strings.EqualFold(e.Package, v.Package) {
+			continue
+		}
+		// A versioned exception covers that release and no other. An
+		// unversioned one covers the package, which is what it has always
+		// meant — including when the question is about a version.
+		if e.Version != "" && !strings.EqualFold(e.Version, v.Version) {
 			continue
 		}
 		if e.Expires != "" {

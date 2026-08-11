@@ -3,6 +3,7 @@ package sources
 import (
 	"errors"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jhberges/depmesh-ai/internal/model"
@@ -37,7 +38,7 @@ type cargoVersion struct {
 	YankMessage string `json:"yank_message"`
 }
 
-func fetchCargo(name string) (*model.PackageFacts, error) {
+func fetchCargo(name, version string) (*model.PackageFacts, error) {
 	facts := &model.PackageFacts{Ecosystem: model.Cargo, Name: name}
 	var doc cargoDoc
 	err := getJSON(cratesRegistry+"/"+url.PathEscape(name), &doc)
@@ -100,8 +101,65 @@ func fetchCargo(name string) (*model.PackageFacts, error) {
 			"every published version has been yanked from crates.io",
 		)
 	}
+
+	// Last, because IsLatest depends on LatestVersion being settled.
+	if version != "" {
+		facts.Requested = cargoVersionFacts(facts, name, version, byVersion)
+	}
 	// MaintainerCount stays nil: owners are a separate, rate-limited endpoint
 	// (/crates/{name}/owners), and a second request per vet is not worth one
 	// signal.
 	return facts, nil
+}
+
+// cargoVersionFacts answers about one requested release. Everything it needs is
+// in the document already fetched — crates.io returns every version with its
+// date, license and yank state — so the common path costs no extra request.
+//
+// The yanked versions are the reason this reads from byVersion rather than from
+// facts.Releases: a yank keeps a version out of the release history on purpose,
+// and a caller pinning a yanked version is exactly the case that most needs an
+// answer.
+func cargoVersionFacts(facts *model.PackageFacts, name, version string, byVersion map[string]cargoVersion) *model.VersionFacts {
+	resolved := ""
+	// crates.io publishes canonical semver, so the only spelling that varies is
+	// a leading "v" people paste out of a tag name.
+	for _, candidate := range []string{version, strings.TrimPrefix(version, "v")} {
+		if _, ok := byVersion[candidate]; ok {
+			resolved = candidate
+			break
+		}
+	}
+	vf := requestedVersion(facts, version, resolved, func() (string, error) {
+		// The versions in hand come from the crate response, which crates.io
+		// has been moving toward paginating. If a spelling misses there, the
+		// per-version endpoint is authoritative about that one release, and it
+		// is what keeps a paged-out version from being called a hallucination.
+		var one struct {
+			Version cargoVersion `json:"version"`
+		}
+		if err := getJSON(cratesRegistry+"/"+url.PathEscape(name)+"/"+url.PathEscape(version), &one); err != nil {
+			return "", err
+		}
+		byVersion[firstNonEmpty(one.Version.Num, version)] = one.Version
+		return firstNonEmpty(one.Version.Num, version), nil
+	})
+	entry, known := byVersion[vf.Resolved]
+	if !known {
+		return vf
+	}
+	vf.License = entry.License
+	if entry.Yanked {
+		// A yanked version is not in facts.Releases, so requestedVersion found
+		// neither its date nor its yank state there.
+		vf.Yanked = true
+		vf.DeprecationMessage = firstNonEmpty(entry.YankMessage, "yanked from crates.io")
+	}
+	if vf.ReleaseDate == nil {
+		if created, err := time.Parse(time.RFC3339, entry.CreatedAt); err == nil {
+			created := created.UTC()
+			vf.ReleaseDate = &created
+		}
+	}
+	return vf
 }

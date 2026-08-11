@@ -2,6 +2,7 @@ package sources
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,7 +43,7 @@ type goVersionInfo struct {
 	Time    string `json:"Time"`
 }
 
-func fetchGo(name string) (*model.PackageFacts, error) {
+func fetchGo(name, version string) (*model.PackageFacts, error) {
 	facts := &model.PackageFacts{Ecosystem: model.Go, Name: name}
 	base := goProxy + "/" + escapeGoPath(name)
 
@@ -62,7 +63,7 @@ func fetchGo(name string) (*model.PackageFacts, error) {
 			return facts, nil
 		}
 		facts.Exists = model.Bool(true)
-		facts.Releases = goReleases(base, versions, goVersionInfo{})
+		facts.Releases = goReleases(base, versions, goVersionInfo{}, version)
 	case err != nil:
 		return nil, err
 	default:
@@ -72,19 +73,105 @@ func fetchGo(name string) (*model.PackageFacts, error) {
 		if listErr != nil {
 			return nil, listErr
 		}
-		facts.Releases = goReleases(base, versions, latest)
+		facts.Releases = goReleases(base, versions, latest, version)
 	}
 
 	if facts.LatestVersion == "" && len(facts.Releases) > 0 {
 		facts.LatestVersion = facts.Releases[0].Version
 	}
+	// One go.mod, read twice: it carries both the deprecation marker and the
+	// retract directives, and retractions are the only per-version withdrawal
+	// Go has.
+	latestMod := ""
 	if facts.LatestVersion != "" {
-		facts.Deprecated, facts.DeprecationMessage = goDeprecation(base, facts.LatestVersion)
+		latestMod = goModFile(base, facts.LatestVersion)
+		facts.Deprecated, facts.DeprecationMessage = goDeprecation(latestMod)
 	}
 	// The proxy publishes no license and no maintainers; deps.dev covers `go`
 	// and fills the license there. Homepage and repository are the module path
 	// itself, which the caller already has.
+
+	// Last, because IsLatest depends on LatestVersion being settled.
+	if version != "" {
+		facts.Requested = goVersionFacts(facts, base, name, version, latestMod)
+	}
 	return facts, nil
+}
+
+// goVersionFacts answers about one requested version.
+//
+// @v/list is not an enumeration to deny a version from: it lists tagged
+// versions the proxy has seen, while a perfectly resolvable pseudo-version
+// (v0.0.0-20240115120000-abcdef123456) never appears in it and is what a
+// go.mod pinning an untagged commit contains. So a miss goes to `.info` for
+// that one version, which is authoritative, and only its 404 denies.
+func goVersionFacts(facts *model.PackageFacts, base, name, version, latestMod string) *model.VersionFacts {
+	resolved := ""
+	for _, candidate := range goSpellings(version) {
+		if indexOfRelease(facts.Releases, candidate) >= 0 {
+			resolved = candidate
+			break
+		}
+	}
+
+	var confirmed goVersionInfo
+	vf := requestedVersion(facts, version, resolved, func() (string, error) {
+		for _, candidate := range goSpellings(version) {
+			var info goVersionInfo
+			err := getJSON(base+"/@v/"+escapeGoPath(candidate)+".info", &info)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return "", err
+			}
+			confirmed = info
+			return firstNonEmpty(info.Version, candidate), nil
+		}
+		return "", fmt.Errorf("the module proxy has no version %q of %s: %w", version, name, ErrNotFound)
+	})
+	if vf.Exists == nil || !*vf.Exists {
+		return vf
+	}
+	if vf.ReleaseDate == nil {
+		if when, err := time.Parse(time.RFC3339, confirmed.Time); err == nil {
+			when := when.UTC()
+			vf.ReleaseDate = &when
+		}
+	}
+
+	// A retraction is the maintainer saying this release should not be used —
+	// Go's equivalent of a yank, and unlike one it is announced from the
+	// *latest* go.mod rather than by removing anything, so it costs no request
+	// beyond the one already made.
+	if reason, retracted := goRetraction(latestMod, vf.Resolved); retracted {
+		vf.Yanked = true
+		vf.DeprecationMessage = firstNonEmpty(reason, "retracted in the module's go.mod")
+	}
+
+	// Deprecation is declared in each version's own go.mod, so a pin from
+	// before the announcement does not carry it. The latest one is already
+	// read; any other version costs one request, which is what makes the
+	// difference between "this module is deprecated" and "the release you
+	// pinned said so".
+	switch {
+	case vf.Resolved == facts.LatestVersion:
+		vf.Deprecated, vf.DeprecationMessage = facts.Deprecated, firstNonEmpty(facts.DeprecationMessage, vf.DeprecationMessage)
+	default:
+		if deprecated, message := goDeprecation(goModFile(base, vf.Resolved)); deprecated {
+			vf.Deprecated, vf.DeprecationMessage = true, firstNonEmpty(message, vf.DeprecationMessage)
+		}
+	}
+	return vf
+}
+
+// goSpellings returns the forms a requested version may be written in. Module
+// versions are canonically "v"-prefixed, but lockfiles and humans drop it.
+func goSpellings(version string) []string {
+	if strings.HasPrefix(version, "v") {
+		return []string{version}
+	}
+	return []string{version, "v" + version}
 }
 
 // goVersionList reads @v/list: version strings, one per line, in no
@@ -112,7 +199,7 @@ func goVersionList(base string) ([]string, error) {
 // purpose: it is the ordering @v/list does not provide, it survives the
 // versions left undated, and it puts the genuinely oldest release last where
 // BuildReleasePace looks for the first publication.
-func goReleases(base string, versions []string, latest goVersionInfo) []model.ReleaseRef {
+func goReleases(base string, versions []string, latest goVersionInfo, pinned string) []model.ReleaseRef {
 	if latest.Version != "" && !slicesContain(versions, latest.Version) {
 		versions = append(versions, latest.Version)
 	}
@@ -124,7 +211,19 @@ func goReleases(base string, versions []string, latest goVersionInfo) []model.Re
 	if when, err := time.Parse(time.RFC3339, latest.Time); err == nil {
 		dates[latest.Version] = when.UTC()
 	}
-	for _, version := range selectGoVersions(versions, maxGoVersionInfos) {
+	// The pinned version's own date is bought whatever the budget says: it is
+	// what "how far behind is this pin" is measured from, and a middle version
+	// is exactly where the budget would otherwise leave a hole.
+	wanted := selectGoVersions(versions, maxGoVersionInfos)
+	if pinned != "" {
+		for _, candidate := range goSpellings(pinned) {
+			if slicesContain(versions, candidate) && !slicesContain(wanted, candidate) {
+				wanted = append(wanted, candidate)
+				break
+			}
+		}
+	}
+	for _, version := range wanted {
 		if _, known := dates[version]; known {
 			continue
 		}
@@ -162,17 +261,23 @@ func selectGoVersions(versions []string, n int) []string {
 	return append(versions[:n-1:n-1], versions[len(versions)-1])
 }
 
+// goModFile fetches one version's go.mod, or "" if it will not load — the
+// signals read out of it are all "absent" rather than "false" in that case.
+// It is worth the request: deprecation is the heaviest single signal, and the
+// proxy offers no other way to see it.
+func goModFile(base, version string) string {
+	body, err := getText(base + "/@v/" + escapeGoPath(version) + ".mod")
+	if err != nil {
+		return ""
+	}
+	return body
+}
+
 // goDeprecation reads the module's go.mod. A module is deprecated by a
 // "// Deprecated: ..." comment on the block immediately above the module
 // directive — the same marker `go list -m -u` reports, and how
-// github.com/golang/protobuf announces that it has been replaced. It is worth
-// one extra request: deprecation is the heaviest single signal, and the proxy
-// offers no other way to see it.
-func goDeprecation(base, version string) (bool, string) {
-	body, err := getText(base + "/@v/" + escapeGoPath(version) + ".mod")
-	if err != nil {
-		return false, ""
-	}
+// github.com/golang/protobuf announces that it has been replaced.
+func goDeprecation(body string) (bool, string) {
 	var message []string
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
@@ -189,6 +294,65 @@ func goDeprecation(base, version string) (bool, string) {
 		}
 	}
 	return false, ""
+}
+
+// goRetraction reports whether the module's go.mod retracts a version, and the
+// reason its comment gives. A retraction is Go's yank: the version stays
+// downloadable — the proxy is immutable, so it must — and is instead announced
+// as unusable from the *latest* go.mod, which is the one already fetched.
+//
+// The directive comes in a single form and a block, and either line may name
+// one version or a closed interval:
+//
+//	retract v1.0.1 // published by mistake
+//	retract (
+//	    [v1.3.0, v1.4.0] // broken on Windows
+//	)
+//
+// Intervals are why this needs compareGoVersions rather than string equality:
+// the retracted versions in a range are usually not written down anywhere.
+func goRetraction(body, version string) (string, bool) {
+	inBlock := false
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "retract ("):
+			inBlock = true
+			continue
+		case inBlock && line == ")":
+			inBlock = false
+			continue
+		case strings.HasPrefix(line, "retract "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "retract"))
+		case !inBlock:
+			continue
+		}
+		spec, comment, _ := strings.Cut(line, "//")
+		if retractionCovers(strings.TrimSpace(spec), version) {
+			return strings.TrimSpace(comment), true
+		}
+	}
+	return "", false
+}
+
+// retractionCovers matches one retract spec: a bare version, or "[low, high]"
+// naming a closed interval.
+func retractionCovers(spec, version string) bool {
+	if spec == "" {
+		return false
+	}
+	if !strings.HasPrefix(spec, "[") {
+		// Compared rather than matched, so that a spelling difference the
+		// proxy tolerates — a missing "v", "+incompatible" build metadata —
+		// does not hide a retraction.
+		return compareGoVersions(spec, version) == 0
+	}
+	low, high, ok := strings.Cut(strings.Trim(spec, "[]"), ",")
+	if !ok {
+		return false
+	}
+	low, high = strings.TrimSpace(low), strings.TrimSpace(high)
+	return compareGoVersions(version, low) >= 0 && compareGoVersions(version, high) <= 0
 }
 
 // escapeGoPath applies the module proxy's case encoding: an uppercase letter

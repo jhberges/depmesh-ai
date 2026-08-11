@@ -30,7 +30,7 @@ type pypiFile struct {
 	Yanked        bool   `json:"yanked"`
 }
 
-func fetchPyPI(name string) (*model.PackageFacts, error) {
+func fetchPyPI(name, version string) (*model.PackageFacts, error) {
 	facts := &model.PackageFacts{Ecosystem: model.PyPI, Name: name}
 	var doc pypiDoc
 	err := getJSON(pypiRegistry+"/"+url.PathEscape(name)+"/json", &doc)
@@ -68,19 +68,90 @@ func fetchPyPI(name string) (*model.PackageFacts, error) {
 	}
 	facts.License = license
 
-	for version, files := range doc.Releases {
-		ref := model.ReleaseRef{Version: version}
+	// PyPI normalizes versions (PEP 440), so the key it publishes need not be
+	// the spelling a caller has in a lockfile. Index by normalized key as we go
+	// and the requested-version lookup costs nothing.
+	byKey := make(map[string]string, len(doc.Releases))
+	for released, files := range doc.Releases {
+		ref := model.ReleaseRef{Version: released}
 		if earliest := earliestUpload(files); earliest != nil {
 			ref.ReleaseDate = earliest
 		}
+		// Per-file yank status is already in this document; before, it was only
+		// consulted for the latest release.
+		ref.Yanked = len(files) > 0 && allYanked(files)
 		facts.Releases = append(facts.Releases, ref)
-		if version == facts.LatestVersion && len(files) > 0 && allYanked(files) {
+		byKey[pypiKey(released)] = released
+		if released == facts.LatestVersion && ref.Yanked {
 			facts.Deprecated = true
 			facts.DeprecationMessage = "latest release is yanked on PyPI"
 		}
 	}
 	sortNewestFirst(facts.Releases)
+
+	if version != "" {
+		facts.Requested = pypiVersionFacts(facts, name, version, byKey)
+	}
 	return facts, nil
+}
+
+// pypiVersionFacts resolves a requested version against the release keys, and
+// on a miss confirms with the per-version endpoint before saying it does not
+// exist. That extra request only happens on the miss path, and it is what makes
+// a "this version does not exist" answer authoritative rather than a guess
+// about our own normalization.
+func pypiVersionFacts(facts *model.PackageFacts, name, version string, byKey map[string]string) *model.VersionFacts {
+	resolved := byKey[pypiKey(version)]
+	vf := requestedVersion(facts, version, resolved, func() (string, error) {
+		var one pypiDoc
+		if err := getJSON(pypiRegistry+"/"+url.PathEscape(name)+"/"+url.PathEscape(version)+"/json", &one); err != nil {
+			return "", err
+		}
+		return firstNonEmpty(one.Info.Version, version), nil
+	})
+	if vf.Yanked {
+		vf.DeprecationMessage = "release is yanked on PyPI"
+	}
+	// Per-version license needs its own request, so leave it to deps.dev
+	// enrichment, which is asked about this exact version anyway.
+	return vf
+}
+
+// pypiKey is a loose PEP 440 normalization, enough to match a requested
+// spelling against the keys PyPI returned: case, a leading "v", separators
+// before prerelease markers, and trailing zero segments all vary in practice
+// ("1.0", "1.0.0", "v1.0", "2.0rc1", "2.0-rc1", "2.0.rc1").
+//
+// It is only ever used to *find* a release. A key that fails to match falls
+// through to the authoritative per-version request, so being incomplete here
+// costs one HTTP call and never a wrong answer.
+func pypiKey(version string) string {
+	v := strings.ToLower(strings.TrimSpace(version))
+	v = strings.TrimPrefix(v, "v")
+	v = strings.NewReplacer("alpha", "a", "beta", "b", "preview", "rc", "pre", "rc", "-c", "-rc").Replace(v)
+
+	// Drop a separator that sits immediately before a letter: PEP 440 treats
+	// "1.0-rc1", "1.0.rc1", "1.0_rc1" and "1.0rc1" as the same version.
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if (c == '-' || c == '_' || c == '.') && i+1 < len(v) && v[i+1] >= 'a' && v[i+1] <= 'z' {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	v = b.String()
+
+	// Trim trailing zero segments of the numeric release part: 1.0.0 == 1.0 == 1.
+	end := 0
+	for end < len(v) && (v[end] >= '0' && v[end] <= '9' || v[end] == '.') {
+		end++
+	}
+	release, rest := v[:end], v[end:]
+	for strings.HasSuffix(release, ".0") {
+		release = strings.TrimSuffix(release, ".0")
+	}
+	return release + rest
 }
 
 func earliestUpload(files []pypiFile) *time.Time {

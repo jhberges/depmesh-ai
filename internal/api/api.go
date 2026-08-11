@@ -7,7 +7,12 @@
 //	GET /healthz                           → 200 ok
 //
 // {package...} may contain slashes (npm scopes) and colons (maven
-// coordinates). Query: ?enrich=false to skip deps.dev.
+// coordinates). Query: ?enrich=false to skip deps.dev, ?version= to vet one
+// exact release as well as the package.
+//
+// The version is a query parameter rather than a path segment precisely
+// because {package...} is greedy: a Maven GAV in the path would be
+// indistinguishable from the coordinate itself.
 package api
 
 import (
@@ -33,8 +38,9 @@ func Handler(g *gate.Gate) http.Handler {
 		ecosystem := r.PathValue("ecosystem")
 		name := r.PathValue("package")
 		enrich := r.URL.Query().Get("enrich") != "false"
+		version := strings.TrimSpace(r.URL.Query().Get("version"))
 
-		outcome, err := g.Vet(caller(r), ecosystem, name, enrich)
+		outcome, err := g.Vet(caller(r), ecosystem, name, version, enrich)
 		var unavailable *sources.UnavailableError
 		switch {
 		case errors.As(err, &unavailable):

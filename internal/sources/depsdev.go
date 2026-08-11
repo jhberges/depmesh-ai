@@ -31,7 +31,18 @@ type depsDevVersion struct {
 }
 
 func enrichDepsDev(facts *model.PackageFacts) {
-	if facts.Exists == nil || !*facts.Exists || facts.LatestVersion == "" {
+	if facts.Exists == nil || !*facts.Exists {
+		return
+	}
+	// The endpoint has always been version-addressed; it was simply pinned to
+	// the latest release. Advisories are the signal that varies most between
+	// versions — a CVE applies to a range, which is the whole point of one — so
+	// when a caller named a version, that is the version to ask about.
+	target, requested := facts.LatestVersion, facts.Requested
+	if requested != nil && requested.Resolved != "" {
+		target = requested.Resolved
+	}
+	if target == "" {
 		return
 	}
 	// Not every ecosystem is covered — packagist and pub are not, and hex is
@@ -47,15 +58,31 @@ func enrichDepsDev(facts *model.PackageFacts) {
 		depsDevAPI,
 		system,
 		url.PathEscape(facts.Name),
-		url.PathEscape(facts.LatestVersion),
+		url.PathEscape(target),
 	)
 	var doc depsDevVersion
 	if err := getJSON(endpoint, &doc); err != nil {
 		facts.Degraded = append(facts.Degraded, "deps.dev (unreachable — advisories unknown)")
 		return
 	}
+	// One request, attributed to whichever version it actually described.
+	// Asking about both would double the egress for a signal the requested
+	// version already answers.
+	if target != facts.LatestVersion && requested != nil {
+		requested.AdvisoryCount = model.Int(len(doc.AdvisoryKeys))
+		if requested.License == "" && len(doc.Licenses) > 0 {
+			requested.License = doc.Licenses[0]
+		}
+		return
+	}
 	facts.AdvisoryCount = model.Int(len(doc.AdvisoryKeys))
 	if facts.License == "" && len(doc.Licenses) > 0 {
 		facts.License = doc.Licenses[0]
+	}
+	if requested != nil && requested.IsLatest {
+		requested.AdvisoryCount = facts.AdvisoryCount
+		if requested.License == "" {
+			requested.License = facts.License
+		}
 	}
 }

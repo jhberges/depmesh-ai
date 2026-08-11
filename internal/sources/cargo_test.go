@@ -41,7 +41,7 @@ func cargoServer(t *testing.T, routes map[string]string) {
 func TestCargoReadsACrate(t *testing.T) {
 	cargoServer(t, map[string]string{"/somecrate": cargoCrate})
 
-	facts, err := fetchCargo("somecrate")
+	facts, err := fetchCargo("somecrate", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestCargoReadsACrate(t *testing.T) {
 func TestCargoExcludesYankedVersionsWithoutDeprecating(t *testing.T) {
 	cargoServer(t, map[string]string{"/somecrate": cargoCrate})
 
-	facts, err := fetchCargo("somecrate")
+	facts, err := fetchCargo("somecrate", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestCargoTreatsAFullyYankedCrateAsDeprecated(t *testing.T) {
 	                "license": "MIT", "yanked": true, "yank_message": "name squat, sorry"}]
 	}`})
 
-	facts, err := fetchCargo("somecrate")
+	facts, err := fetchCargo("somecrate", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestCargoFallsBackWhenTheStableVersionIsYanked(t *testing.T) {
 	  ]
 	}`})
 
-	facts, err := fetchCargo("somecrate")
+	facts, err := fetchCargo("somecrate", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestCargoFallsBackWhenTheStableVersionIsYanked(t *testing.T) {
 func TestCargoReportsAbsence(t *testing.T) {
 	cargoServer(t, map[string]string{})
 
-	facts, err := fetchCargo("no-such-crate")
+	facts, err := fetchCargo("no-such-crate", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,12 +147,134 @@ func TestCargoReportsAbsence(t *testing.T) {
 func TestCargoOutageIsNotAbsence(t *testing.T) {
 	cargoServer(t, map[string]string{"/somecrate": "STATUS:429:slow down"})
 
-	facts, err := fetchCargo("somecrate")
+	facts, err := fetchCargo("somecrate", "")
 	if facts != nil {
 		t.Fatalf("facts = %+v, want nil", facts)
 	}
 	var unavailable *UnavailableError
 	if !errors.As(err, &unavailable) {
 		t.Fatalf("err = %v, want UnavailableError", err)
+	}
+}
+
+func TestCargoReadsTheRequestedVersionsOwnFacts(t *testing.T) {
+	cargoServer(t, map[string]string{"/somecrate": cargoCrate})
+
+	// 1.0.0's license differs from the latest release's, which is the whole
+	// point of asking per version: relicensing changes what a pin permits.
+	facts, err := fetchCargo("somecrate", "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := facts.Requested
+	if requested == nil || requested.Exists == nil || !*requested.Exists {
+		t.Fatalf("requested = %+v, want an existing version", requested)
+	}
+	if requested.License != "MIT" {
+		t.Errorf("license = %q, want MIT", requested.License)
+	}
+	if requested.IsLatest {
+		t.Error("1.0.0 reported as the latest release")
+	}
+	if requested.ReleaseDate == nil || requested.ReleaseDate.Format("2006-01-02") != "2023-01-04" {
+		t.Errorf("release date = %v, want 2023-01-04", requested.ReleaseDate)
+	}
+
+	facts, err = fetchCargo("somecrate", "1.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !facts.Requested.IsLatest {
+		t.Error("1.2.0 is max_stable_version and should be reported as latest")
+	}
+}
+
+// A yank keeps a version out of the release history on purpose. It must not
+// keep it out of the answer: pinning a yanked version is the case that most
+// needs one.
+func TestCargoAnswersAboutAYankedVersion(t *testing.T) {
+	cargoServer(t, map[string]string{"/somecrate": cargoCrate})
+
+	facts, err := fetchCargo("somecrate", "1.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := facts.Requested
+	if requested.Exists == nil || !*requested.Exists {
+		t.Fatalf("exists = %v, want true", requested.Exists)
+	}
+	if !requested.Yanked {
+		t.Error("Yanked = false for a version yanked from crates.io")
+	}
+	if !strings.Contains(requested.DeprecationMessage, "botched release") {
+		t.Errorf("message = %q, want the yank message", requested.DeprecationMessage)
+	}
+	// The date is not in facts.Releases either, and the currency signal needs it.
+	if requested.ReleaseDate == nil {
+		t.Error("no release date for a yanked version")
+	}
+}
+
+func TestCargoToleratesALeadingV(t *testing.T) {
+	cargoServer(t, map[string]string{"/somecrate": cargoCrate})
+
+	facts, err := fetchCargo("somecrate", "v1.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Resolved != "1.2.0" {
+		t.Errorf("resolved = %q, want the registry's spelling", facts.Requested.Resolved)
+	}
+}
+
+func TestCargoUnknownVersionIsDeniedOnlyByThePerVersionEndpoint(t *testing.T) {
+	cargoServer(t, map[string]string{"/somecrate": cargoCrate})
+
+	facts, err := fetchCargo("somecrate", "9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Exists == nil || *facts.Requested.Exists {
+		t.Fatalf("exists = %v, want false once the version endpoint 404s", facts.Requested.Exists)
+	}
+}
+
+// crates.io has been moving toward paginating the version list, so a version
+// missing from the crate response may simply not be in the page we were given.
+func TestCargoVersionMissingFromTheListIsRecoveredByItsOwnEndpoint(t *testing.T) {
+	cargoServer(t, map[string]string{
+		"/somecrate": cargoCrate,
+		"/somecrate/0.9.0": `{"version": {"num": "0.9.0", "license": "MIT",
+		  "created_at": "2022-01-04T10:00:00.000000Z", "yanked": false}}`,
+	})
+
+	facts, err := fetchCargo("somecrate", "0.9.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := facts.Requested
+	if requested.Exists == nil || !*requested.Exists {
+		t.Fatalf("exists = %v, want true", requested.Exists)
+	}
+	if requested.License != "MIT" || requested.ReleaseDate == nil {
+		t.Errorf("requested = %+v, want the endpoint's license and date", requested)
+	}
+}
+
+func TestCargoVersionOutageLeavesExistenceUnknown(t *testing.T) {
+	cargoServer(t, map[string]string{
+		"/somecrate":       cargoCrate,
+		"/somecrate/0.9.0": "STATUS:503:service unavailable",
+	})
+
+	facts, err := fetchCargo("somecrate", "0.9.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Exists != nil {
+		t.Errorf("exists = %v, want unknown after a 503", *facts.Requested.Exists)
+	}
+	if len(facts.Degraded) == 0 {
+		t.Error("an unconfirmed version should be reported in Degraded")
 	}
 }

@@ -51,7 +51,7 @@ func nugetServer(t *testing.T, routes map[string]string) {
 func TestNuGetReadsAnInlinedIndex(t *testing.T) {
 	nugetServer(t, map[string]string{"/somelib/index.json": nugetInlineIndex})
 
-	facts, err := fetchNuGet("SomeLib")
+	facts, err := fetchNuGet("SomeLib", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestNuGetReadsAnInlinedIndex(t *testing.T) {
 func TestNuGetSkipsUnlistedVersions(t *testing.T) {
 	nugetServer(t, map[string]string{"/somelib/index.json": nugetInlineIndex})
 
-	facts, err := fetchNuGet("SomeLib")
+	facts, err := fetchNuGet("SomeLib", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestNuGetFetchesPagesThatAreNotInlined(t *testing.T) {
 	nugetRegistration = server.URL
 	t.Cleanup(func() { nugetRegistration = previous })
 
-	facts, err := fetchNuGet("SomeLib")
+	facts, err := fetchNuGet("SomeLib", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestNuGetFetchesPagesThatAreNotInlined(t *testing.T) {
 func TestNuGetReportsAbsence(t *testing.T) {
 	nugetServer(t, map[string]string{})
 
-	facts, err := fetchNuGet("no-such-package")
+	facts, err := fetchNuGet("no-such-package", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestNuGetReportsAbsence(t *testing.T) {
 func TestNuGetOutageIsNotAbsence(t *testing.T) {
 	nugetServer(t, map[string]string{"/somelib/index.json": "STATUS:503:busy"})
 
-	facts, err := fetchNuGet("SomeLib")
+	facts, err := fetchNuGet("SomeLib", "")
 	if facts != nil {
 		t.Fatalf("facts = %+v, want nil", facts)
 	}
@@ -189,7 +189,7 @@ func TestNuGetSurvivesAnUnreadablePage(t *testing.T) {
 		"/somelib/index.json": `{"items": [{"@id": "http://127.0.0.1:1/page.json"}]}`,
 	})
 
-	facts, err := fetchNuGet("SomeLib")
+	facts, err := fetchNuGet("SomeLib", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,5 +225,111 @@ func TestSelectNuGetPages(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNuGetReadsTheRequestedVersionsOwnFacts(t *testing.T) {
+	nugetServer(t, map[string]string{"/somelib/index.json": nugetInlineIndex})
+
+	// 1.0.0 is clean; the deprecation in this package is on 2.0.0 alone, and
+	// asking about one version must not inherit the other's record.
+	facts, err := fetchNuGet("SomeLib", "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := facts.Requested
+	if requested == nil || requested.Exists == nil || !*requested.Exists {
+		t.Fatalf("requested = %+v, want an existing version", requested)
+	}
+	if requested.Deprecated {
+		t.Error("1.0.0 inherited the deprecation recorded against 2.0.0")
+	}
+	if requested.License != "MIT" {
+		t.Errorf("license = %q, want MIT", requested.License)
+	}
+	if requested.IsLatest {
+		t.Error("1.0.0 reported as the latest release")
+	}
+
+	// 2.0.0 carries its own deprecation, and is the newest stable.
+	facts, err = fetchNuGet("SomeLib", "2.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !facts.Requested.Deprecated {
+		t.Error("2.0.0's own deprecation not read")
+	}
+	if !strings.Contains(facts.Requested.DeprecationMessage, "Other.Package") {
+		t.Errorf("deprecation message = %q", facts.Requested.DeprecationMessage)
+	}
+	if !facts.Requested.IsLatest {
+		t.Error("2.0.0 is the newest stable and should be reported as latest")
+	}
+}
+
+func TestNuGetVersionLookupIsCaseInsensitive(t *testing.T) {
+	// NuGet ids and versions are case-insensitive, so a lockfile's casing need
+	// not match the catalog's.
+	nugetServer(t, map[string]string{"/somelib/index.json": nugetInlineIndex})
+	facts, err := fetchNuGet("SomeLib", "3.0.0-BETA1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Resolved != "3.0.0-beta1" {
+		t.Errorf("resolved = %q, want the catalog's spelling", facts.Requested.Resolved)
+	}
+}
+
+func TestNuGetUnknownVersionIsDeniedOnlyByTheLeaf(t *testing.T) {
+	nugetServer(t, map[string]string{"/somelib/index.json": nugetInlineIndex})
+	facts, err := fetchNuGet("SomeLib", "9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Exists == nil || *facts.Requested.Exists {
+		t.Fatalf("exists = %v, want false after the leaf 404s", facts.Requested.Exists)
+	}
+}
+
+func TestNuGetUnlistedVersionStillExists(t *testing.T) {
+	// 1.5.0 is unlisted, so it is deliberately absent from the release history
+	// — but it is installable when pinned exactly, and its leaf says so. A pin
+	// to a hidden version is not a hallucinated version.
+	nugetServer(t, map[string]string{
+		"/somelib/index.json": nugetInlineIndex,
+		"/somelib/1.5.0.json": `{"catalogEntry": "https://example.invalid/catalog/1.5.0"}`,
+	})
+	facts, err := fetchNuGet("SomeLib", "1.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Exists == nil || !*facts.Requested.Exists {
+		t.Fatalf("exists = %v, want true", facts.Requested.Exists)
+	}
+}
+
+func TestNuGetUnreachableLeafLeavesVersionExistenceUnknown(t *testing.T) {
+	// The page budget means the entries in hand are not a complete enumeration,
+	// so a miss plus a registry hiccup must read as unknown. Saying "this
+	// version does not exist" here would call a working pin a hallucination.
+	nugetServer(t, map[string]string{
+		"/somelib/index.json": nugetInlineIndex,
+		"/somelib/0.9.0.json": "STATUS:503:service unavailable",
+	})
+	facts, err := fetchNuGet("SomeLib", "0.9.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Exists != nil {
+		t.Fatalf("exists = %v, want unknown", *facts.Requested.Exists)
+	}
+	var reported bool
+	for _, degraded := range facts.Degraded {
+		if strings.Contains(degraded, "0.9.0") {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("unconfirmed version not named in Degraded: %v", facts.Degraded)
 	}
 }

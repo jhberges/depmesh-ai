@@ -36,7 +36,7 @@ func TestPubReadsAPackage(t *testing.T) {
 		"/widgets/score": pubScoreBody,
 	})
 
-	facts, err := fetchPub("widgets")
+	facts, err := fetchPub("widgets", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestPubReadsAPackage(t *testing.T) {
 func TestPubExcludesRetractedVersionsWithoutDeprecating(t *testing.T) {
 	pubServer(t, map[string]string{"/widgets": pubPackage, "/widgets/score": pubScoreBody})
 
-	facts, err := fetchPub("widgets")
+	facts, err := fetchPub("widgets", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestPubTreatsAFullyRetractedPackageAsDeprecated(t *testing.T) {
 	  "versions": [{"version": "1.0.0", "published": "2023-01-04T10:00:00Z", "retracted": true}]
 	}`})
 
-	facts, err := fetchPub("widgets")
+	facts, err := fetchPub("widgets", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestPubTreatsAFullyRetractedPackageAsDeprecated(t *testing.T) {
 func TestPubSurvivesAnUnreachableScore(t *testing.T) {
 	pubServer(t, map[string]string{"/widgets": pubPackage})
 
-	facts, err := fetchPub("widgets")
+	facts, err := fetchPub("widgets", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestPubSurvivesAnUnreachableScore(t *testing.T) {
 func TestPubReportsAbsence(t *testing.T) {
 	pubServer(t, map[string]string{})
 
-	facts, err := fetchPub("no_such_package")
+	facts, err := fetchPub("no_such_package", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestPubReportsAbsence(t *testing.T) {
 func TestPubOutageIsNotAbsence(t *testing.T) {
 	pubServer(t, map[string]string{"/widgets": "STATUS:503:down"})
 
-	facts, err := fetchPub("widgets")
+	facts, err := fetchPub("widgets", "")
 	if facts != nil {
 		t.Fatalf("facts = %+v, want nil", facts)
 	}
@@ -146,7 +146,7 @@ func TestPubOutageIsNotAbsence(t *testing.T) {
 func TestUncoveredEcosystemsDoNotReportDepsDevAsUnreachable(t *testing.T) {
 	pubServer(t, map[string]string{"/widgets": pubPackage, "/widgets/score": pubScoreBody})
 
-	facts, err := fetchPub("widgets")
+	facts, err := fetchPub("widgets", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,5 +156,81 @@ func TestUncoveredEcosystemsDoNotReportDepsDevAsUnreachable(t *testing.T) {
 	}
 	if facts.AdvisoryCount != nil {
 		t.Errorf("AdvisoryCount = %d, want nil", *facts.AdvisoryCount)
+	}
+}
+
+func TestPubReadsTheRequestedVersionsOwnFacts(t *testing.T) {
+	pubServer(t, map[string]string{"/widgets": pubPackage, "/widgets/score": pubScoreBody})
+
+	facts, err := fetchPub("widgets", "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := facts.Requested
+	if requested == nil || requested.Exists == nil || !*requested.Exists {
+		t.Fatalf("requested = %+v, want an existing version", requested)
+	}
+	if requested.IsLatest {
+		t.Error("1.0.0 reported as the latest release")
+	}
+	if requested.ReleaseDate == nil || requested.ReleaseDate.Format("2006-01-02") != "2023-01-04" {
+		t.Errorf("release date = %v, want 2023-01-04", requested.ReleaseDate)
+	}
+
+	facts, err = fetchPub("widgets", "1.6.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !facts.Requested.IsLatest {
+		t.Error("1.6.0 is the latest and should be reported as such")
+	}
+}
+
+// A retraction keeps a version out of the release history, the same way a
+// crates.io yank does — and must not keep it out of the answer.
+func TestPubAnswersAboutARetractedVersion(t *testing.T) {
+	pubServer(t, map[string]string{"/widgets": pubPackage, "/widgets/score": pubScoreBody})
+
+	facts, err := fetchPub("widgets", "1.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := facts.Requested
+	if requested.Exists == nil || !*requested.Exists {
+		t.Fatalf("exists = %v, want true", requested.Exists)
+	}
+	if !requested.Yanked || requested.DeprecationMessage == "" {
+		t.Errorf("requested = %+v, want a retracted version with a reason", requested)
+	}
+	if requested.ReleaseDate == nil {
+		t.Error("no release date for a retracted version")
+	}
+}
+
+func TestPubUnknownVersionIsDeniedOnlyByItsOwnEndpoint(t *testing.T) {
+	pubServer(t, map[string]string{"/widgets": pubPackage, "/widgets/score": pubScoreBody})
+
+	facts, err := fetchPub("widgets", "9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Exists == nil || *facts.Requested.Exists {
+		t.Fatalf("exists = %v, want false once the version endpoint 404s", facts.Requested.Exists)
+	}
+}
+
+func TestPubVersionOutageLeavesExistenceUnknown(t *testing.T) {
+	pubServer(t, map[string]string{
+		"/widgets":                pubPackage,
+		"/widgets/score":          pubScoreBody,
+		"/widgets/versions/0.9.0": "STATUS:503:service unavailable",
+	})
+
+	facts, err := fetchPub("widgets", "0.9.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Requested.Exists != nil {
+		t.Errorf("exists = %v, want unknown after a 503", *facts.Requested.Exists)
 	}
 }

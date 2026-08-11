@@ -48,7 +48,7 @@ var pubLicenseClassifiers = map[string]bool{
 	"fsf-libre": true, "osi-approved": true, "unknown": true,
 }
 
-func fetchPub(name string) (*model.PackageFacts, error) {
+func fetchPub(name, version string) (*model.PackageFacts, error) {
 	facts := &model.PackageFacts{Ecosystem: model.Pub, Name: name}
 	var doc pubDoc
 	escaped := url.PathEscape(name)
@@ -69,13 +69,16 @@ func fetchPub(name string) (*model.PackageFacts, error) {
 	// A retraction withdraws a version from resolution without deleting it —
 	// the same shape as a crates.io yank, and settled the same way: retracted
 	// versions stay out of the pace metric, and only a package with nothing
-	// left to resolve is deprecation-shaped.
-	for _, version := range doc.Versions {
-		if version.Retracted {
+	// left to resolve is deprecation-shaped. They are still indexed, because a
+	// caller pinning a retracted version is the case that most needs an answer.
+	byVersion := map[string]pubVersion{}
+	for _, published := range doc.Versions {
+		byVersion[published.Version] = published
+		if published.Retracted {
 			continue
 		}
-		ref := model.ReleaseRef{Version: version.Version}
-		if when, err := time.Parse(time.RFC3339, version.Published); err == nil {
+		ref := model.ReleaseRef{Version: published.Version}
+		if when, err := time.Parse(time.RFC3339, published.Published); err == nil {
 			when := when.UTC()
 			ref.ReleaseDate = &when
 		}
@@ -97,7 +100,61 @@ func fetchPub(name string) (*model.PackageFacts, error) {
 	// MaintainerCount stays nil: pub.dev names a publisher, which is one
 	// identity however many people stand behind it, so a bus-factor read out
 	// of it would be a guess.
+
+	// Last, because IsLatest depends on LatestVersion being settled.
+	if version != "" {
+		facts.Requested = pubVersionFacts(facts, escaped, version, byVersion)
+	}
 	return facts, nil
+}
+
+// pubVersionFacts answers about one requested release out of the document
+// already fetched: pub.dev returns every version, retracted ones included, with
+// a date for each.
+//
+// The per-version license is left empty. pub.dev publishes no license field at
+// all — the package-level one is read out of the analysis tags, which describe
+// the latest release only, and there is no per-version equivalent short of
+// unpacking the archive. An absent per-version license is scored as our gap
+// rather than the package's, which is the honest reading here.
+func pubVersionFacts(facts *model.PackageFacts, escapedName, version string, byVersion map[string]pubVersion) *model.VersionFacts {
+	resolved := ""
+	// pub.dev requires canonical semver, so the only spelling that varies is a
+	// leading "v" people paste out of a tag name.
+	for _, candidate := range []string{version, strings.TrimPrefix(version, "v")} {
+		if _, ok := byVersion[candidate]; ok {
+			resolved = candidate
+			break
+		}
+	}
+	vf := requestedVersion(facts, version, resolved, func() (string, error) {
+		// The version list is complete, so this only ever runs on a spelling
+		// we failed to match. Asking the endpoint that is authoritative about
+		// one version is still cheaper than the cost of the wrong answer.
+		var one pubVersion
+		if err := getJSON(pubRegistry+"/"+escapedName+"/versions/"+url.PathEscape(version), &one); err != nil {
+			return "", err
+		}
+		byVersion[firstNonEmpty(one.Version, version)] = one
+		return firstNonEmpty(one.Version, version), nil
+	})
+	entry, known := byVersion[vf.Resolved]
+	if !known {
+		return vf
+	}
+	if entry.Retracted {
+		// A retracted version is not in facts.Releases, so requestedVersion
+		// found neither its date nor its status there.
+		vf.Yanked = true
+		vf.DeprecationMessage = "retracted from pub.dev"
+	}
+	if vf.ReleaseDate == nil {
+		if when, err := time.Parse(time.RFC3339, entry.Published); err == nil {
+			when := when.UTC()
+			vf.ReleaseDate = &when
+		}
+	}
+	return vf
 }
 
 // pubLicense reads the license out of the analysis tags, e.g. "license:mit".

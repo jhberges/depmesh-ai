@@ -104,11 +104,11 @@ func New(policyPath, auditOverride, upstreamURL string) (*Gate, error) {
 // telemetry, and we return what it decided. Applying local policy on top
 // would judge the same package twice against two files; reporting telemetry
 // on both ends would count one hallucination twice.
-func (g *Gate) Vet(caller audit.Caller, ecosystem, name string, enrich bool) (*Outcome, error) {
+func (g *Gate) Vet(caller audit.Caller, ecosystem, name, version string, enrich bool) (*Outcome, error) {
 	if g.Upstream != "" {
-		return g.vetUpstream(caller, ecosystem, name, enrich)
+		return g.vetUpstream(caller, ecosystem, name, version, enrich)
 	}
-	verdict, err := vet.Vet(ecosystem, name, enrich)
+	verdict, err := vet.Vet(ecosystem, name, version, enrich)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (g *Gate) Vet(caller audit.Caller, ecosystem, name string, enrich bool) (*O
 	return outcome, nil
 }
 
-func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name string, enrich bool) (*Outcome, error) {
+func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name, version string, enrich bool) (*Outcome, error) {
 	caller = caller.Resolve()
 	body, err := upstream.Vet(upstream.Request{
 		Base:      g.Upstream,
@@ -133,6 +133,7 @@ func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name string, enrich b
 		Hostname:  caller.Hostname,
 		Ecosystem: ecosystem,
 		Package:   name,
+		Version:   version,
 		Enrich:    enrich,
 	})
 	if err != nil {
@@ -144,6 +145,15 @@ func (g *Gate) vetUpstream(caller audit.Caller, ecosystem, name string, enrich b
 	}
 	if outcome.Verdict == nil {
 		return nil, &sources.UnavailableError{URL: g.Upstream, Err: fmt.Errorf("response carried no verdict")}
+	}
+	// An older gate ignores the version parameter and answers about the
+	// package. Returning that would be approval for something never examined,
+	// which is the one thing delegation must never do — so the mismatch is an
+	// error naming the gate that needs upgrading.
+	if version != "" && outcome.Verdict.Version == "" {
+		return nil, fmt.Errorf(
+			"the gate at %s answered about %s without the version %s — it predates version-aware vetting and must be upgraded",
+			g.Upstream, name, version)
 	}
 	return &outcome, nil
 }

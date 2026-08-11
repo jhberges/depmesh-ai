@@ -171,3 +171,29 @@ func TestNormalize(t *testing.T) {
 		}
 	}
 }
+
+// The version is a query parameter, not a path segment: the gate's route ends
+// in {package...}, which would swallow it whole.
+func TestVetSendsTheVersionAsAQueryParameter(t *testing.T) {
+	server, rec := stub(t, http.StatusOK, outcomeJSON)
+
+	if _, err := Vet(Request{
+		Base: server.URL, Ecosystem: "maven",
+		Package: "org.springframework.boot:spring-boot-starter-parent",
+		Version: "3.2.2", Enrich: false,
+	}); err != nil {
+		t.Fatalf("vet: %v", err)
+	}
+	got := rec.get(t).URL
+	if got.Path != "/v1/vet/maven/org.springframework.boot:spring-boot-starter-parent" {
+		t.Errorf("path = %q", got.Path)
+	}
+	if got.Query().Get("version") != "3.2.2" {
+		t.Errorf("version = %q, want 3.2.2", got.Query().Get("version"))
+	}
+	// Both parameters have to survive together; the version arrived after
+	// enrich=false was already on the URL.
+	if got.Query().Get("enrich") != "false" {
+		t.Errorf("enrich = %q, want false", got.Query().Get("enrich"))
+	}
+}

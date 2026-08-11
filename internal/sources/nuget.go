@@ -81,7 +81,7 @@ func (e nugetEntry) listed() bool { return e.Listed == nil || *e.Listed }
 // prerelease is NuGet's own rule: a SemVer pre-release label after a hyphen.
 func (e nugetEntry) prerelease() bool { return strings.Contains(e.Version, "-") }
 
-func fetchNuGet(name string) (*model.PackageFacts, error) {
+func fetchNuGet(name, version string) (*model.PackageFacts, error) {
 	facts := &model.PackageFacts{Ecosystem: model.NuGet, Name: name}
 
 	// Package ids are flat and case-insensitive; the URL wants them lowercased.
@@ -121,6 +121,7 @@ func fetchNuGet(name string) (*model.PackageFacts, error) {
 	// Pages are ordered oldest-first and so are the entries within them, so
 	// the last listed entry overall is the newest version.
 	var newest, newestStable *nugetEntry
+	seen := map[string]*nugetEntry{}
 	for _, page := range index.Items {
 		for _, leaf := range page.Items {
 			entry := leaf.CatalogEntry
@@ -135,7 +136,10 @@ func fetchNuGet(name string) (*model.PackageFacts, error) {
 				published := published.UTC()
 				ref.ReleaseDate = &published
 			}
+			// Per-version deprecation, read off the entry we already have.
+			ref.Yanked = entry.Deprecation != nil
 			facts.Releases = append(facts.Releases, ref)
+			seen[entry.Version] = &leaf.CatalogEntry
 
 			newest = &leaf.CatalogEntry
 			if !entry.prerelease() {
@@ -151,24 +155,81 @@ func fetchNuGet(name string) (*model.PackageFacts, error) {
 	if latest == nil {
 		latest = newest
 	}
-	if latest == nil {
-		return facts, nil
-	}
-	facts.LatestVersion = latest.Version
-	facts.License = latest.LicenseExpression
-	facts.Description = latest.Description
-	facts.Homepage = latest.ProjectURL
-	if latest.Deprecation != nil {
-		facts.Deprecated = true
-		facts.DeprecationMessage = firstNonEmpty(
-			latest.Deprecation.Message,
-			strings.Join(latest.Deprecation.Reasons, ", "),
-		)
+	if latest != nil {
+		facts.LatestVersion = latest.Version
+		facts.License = latest.LicenseExpression
+		facts.Description = latest.Description
+		facts.Homepage = latest.ProjectURL
+		if latest.Deprecation != nil {
+			facts.Deprecated = true
+			facts.DeprecationMessage = nugetDeprecationMessage(latest)
+		}
 	}
 	// MaintainerCount stays nil: `authors` is a free-text display string
 	// ("James Newton-King"), not a list, so any count read out of it would be
 	// a guess feeding a bus-factor penalty.
+
+	// Last, because IsLatest depends on LatestVersion being settled.
+	if version != "" {
+		facts.Requested = nugetVersionFacts(facts, name, version, seen, unread > 0)
+	}
 	return facts, nil
+}
+
+func nugetDeprecationMessage(entry *nugetEntry) string {
+	return firstNonEmpty(entry.Deprecation.Message, strings.Join(entry.Deprecation.Reasons, ", "))
+}
+
+// nugetVersionFacts reads the requested version's own license and deprecation
+// off the catalog entry, when the page carrying it was one of the ones we
+// fetched.
+//
+// The page budget is why this needs a confirming request at all. Unlike npm's
+// packument, the entries in hand are deliberately *not* a complete enumeration:
+// middle history is skipped to keep one vet to a handful of requests. A version
+// missing from them may simply live on a page nobody read, so "not in the pages
+// we fetched" is never grounds for saying it does not exist — the registration
+// leaf for that one version is.
+func nugetVersionFacts(facts *model.PackageFacts, name, version string, seen map[string]*nugetEntry, pagesMissing bool) *model.VersionFacts {
+	resolved := ""
+	if _, ok := seen[version]; ok {
+		resolved = version
+	} else {
+		// NuGet ids and versions are case-insensitive, so a lockfile's casing
+		// need not match the catalog's.
+		for candidate := range seen {
+			if strings.EqualFold(candidate, version) {
+				resolved = candidate
+				break
+			}
+		}
+	}
+	vf := requestedVersion(facts, version, resolved, func() (string, error) {
+		leaf := nugetRegistration + "/" + url.PathEscape(strings.ToLower(name)) +
+			"/" + url.PathEscape(strings.ToLower(version)) + ".json"
+		var found struct{}
+		if err := getJSON(leaf, &found); err != nil {
+			return "", err
+		}
+		return version, nil
+	})
+	entry, ok := seen[vf.Resolved]
+	if !ok {
+		// Confirmed to exist but on a page the budget skipped: its license and
+		// deprecation are unknown rather than absent, and the same gap is
+		// already named in Degraded.
+		if vf.Exists != nil && *vf.Exists && pagesMissing {
+			facts.Degraded = append(facts.Degraded,
+				"nuget registration (license and deprecation for "+version+" not fetched)")
+		}
+		return vf
+	}
+	vf.License = entry.LicenseExpression
+	if entry.Deprecation != nil {
+		vf.Deprecated = true
+		vf.DeprecationMessage = nugetDeprecationMessage(entry)
+	}
+	return vf
 }
 
 // selectNuGetPages returns the indices of pages that must be fetched, spending

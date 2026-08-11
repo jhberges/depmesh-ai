@@ -29,6 +29,16 @@ func Gather(ecosystem model.Ecosystem, name, version string, enrich bool) (*mode
 		facts, err = fetchMaven(name, version)
 	case model.NuGet:
 		facts, err = fetchNuGet(name, version)
+	case model.Cargo:
+		facts, err = fetchCargo(name, version)
+	case model.Go:
+		facts, err = fetchGo(name, version)
+	case model.Packagist:
+		facts, err = fetchPackagist(name, version)
+	case model.Pub:
+		facts, err = fetchPub(name, version)
+	case model.Hex:
+		facts, err = fetchHex(name, version)
 	}
 	if err != nil {
 		return nil, err

@@ -21,7 +21,9 @@ func TestHealthz(t *testing.T) {
 func TestUnknownEcosystemIs400(t *testing.T) {
 	server := httptest.NewServer(Handler(&gate.Gate{}))
 	defer server.Close()
-	response, err := server.Client().Get(server.URL + "/v1/vet/cargo/serde")
+	// Not "cargo": that became a real ecosystem, and the request then reaches
+	// crates.io for real. The name here has to be one nothing will ever vet.
+	response, err := server.Client().Get(server.URL + "/v1/vet/cpan/Some::Module")
 	if err != nil {
 		t.Fatal(err)
 	}

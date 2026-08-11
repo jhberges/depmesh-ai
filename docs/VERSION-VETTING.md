@@ -54,6 +54,12 @@ already in documents we fetch and then throw away.
 | **npm** | `dist-tags` + `time` keys | ✅ `time[v]`, RFC3339 | ✅ `versions[v].license` | ✅ `versions[v].deprecated` | via deps.dev |
 | **PyPI** | `releases` keys (normalize!) | ✅ `releases[v][].upload_time_iso_8601` | ⚠️ one extra request | ✅ `releases[v][].yanked` | via deps.dev |
 | **Maven** | `maven-metadata.xml` list | ⚠️ day granularity, scraped, often absent | ✅ per-version POM | ✗ no concept | via deps.dev |
+| **NuGet** | registration pages, ⚠️ *not* a full enumeration | ✅ `published` per entry | ✅ `licenseExpression` per entry | ✅ `deprecation` per entry | via deps.dev |
+| **crates.io** | `versions[]`, one request | ✅ `created_at` | ✅ `license` per version | ✅ `yanked` + `yank_message` | via deps.dev |
+| **Go** | `@v/list`, ⚠️ tagged versions only | ⚠️ one `.info` request each | ✗ none published | ✅ `retract` + `// Deprecated:` | via deps.dev |
+| **Packagist** | p2 list, ⚠️ tagged versions only | ✅ `time` per version | ⚠️ delta-encoded | ✅ `abandoned` | ✗ not covered |
+| **pub.dev** | `versions[]`, one request | ✅ `published` | ✗ none per version | ✅ `retracted` | ✗ not covered |
+| **Hex** | `releases[]`, one request | ✅ `inserted_at` | ⚠️ one extra request | ✅ `retirements[v]` | ✗ not covered |
 | **deps.dev** | — | — | ✅ | — | ✅ **already version-addressed** |
 
 Three of those cells are the plan's cheapest wins:
@@ -79,6 +85,36 @@ Maven release dates are the weak spot, and they were already weak: they come
 from a regex over an HTML directory listing, at day granularity, and
 `listingDates` returning nothing is recorded in `Degraded`. Everything below
 that divides by a date has to degrade to "unknown", not to "fine".
+
+The ecosystems that landed after this plan was written cost more than a
+substitution, and each for its own reason:
+
+- **A withdrawn version is not in the release history.** crates.io yanks and
+  pub.dev retractions are deliberately kept out of `Releases`, because counting
+  them would credit a package for releases nobody can install. But a caller
+  pinning a yanked version is precisely the case that most needs an answer, so
+  both adapters index every version and read the requested one from there —
+  which is also where its date and its yank message come from.
+- **Packagist's list is delta-encoded.** After the first entry a field is
+  omitted when it has not changed, so reading a version's license off its own
+  entry reports "no license" for every release that simply kept the one it had
+  — most of them. `packagistExpand` fills the omissions back in, in the order
+  Composer itself expands. That reads oddly for `abandoned`, where an older
+  release inherits a marker added after it, and it is right: abandonment is a
+  property of the package, not of the release you pinned.
+- **Go has no per-version license and no yank.** What it has instead is
+  `retract` in the *latest* `go.mod` — the module announcing that a release
+  should not be used, since the proxy is immutable and nothing can be removed.
+  That file is already fetched for the deprecation marker, so retractions cost
+  nothing beyond parsing, including the interval form (`[v1.3.0, v1.4.0]`),
+  which needs the version comparator the adapter already has. Deprecation
+  itself is declared per version, so a pin from before the announcement does
+  not carry it — worth one request to answer honestly.
+- **Hex spends one request on the release document.** Retirement is in hand for
+  every version already; the license is not, and a relicensing between the pin
+  and the latest release is one of the things a version answer is for. It fails
+  soft: an unreachable release document leaves the license empty, exactly as if
+  it had never been asked.
 
 ### Two traps in version identity
 
@@ -107,6 +143,26 @@ extra request on the miss path alone, and it is the difference between a
 trustworthy REJECT and an accusation. npm needs no such call: its packument
 enumerates every published version and npm publishes only canonical semver, so
 the enumeration is itself authoritative.
+
+Three of the later ecosystems make that rule load-bearing rather than
+defensive, because their lists are *known* to be partial:
+
+- **NuGet** pages its registration index and the budget reads four pages, so
+  the entries in hand are deliberately not an enumeration. The registration
+  leaf for one version is.
+- **Go** lists tagged versions in `@v/list`, and a `go.mod` pinning an untagged
+  commit holds a pseudo-version that is never in it and resolves perfectly
+  well. `@v/{version}.info` is what denies one.
+- **Packagist** keeps branch versions (`dev-main`, `1.x-dev`) in a separate
+  `~dev` document, so a `composer.json` can pin something the releases document
+  has never heard of. Only after both are read is an absence real.
+
+The remaining adapters confirm against a per-version endpoint too
+(`/crates/{crate}/{version}`, `/packages/{p}/versions/{v}` on pub.dev,
+`/packages/{p}/releases/{v}` on Hex) even though their one response is a
+complete enumeration today. The cost is one request on a path that only runs
+when a spelling failed to match; the alternative is betting a REJECT on a
+registry never paginating.
 
 ## 3. Scope boundary: exact versions only
 
@@ -320,7 +376,7 @@ only what a source observed.
 
 ### Signature changes
 
-`sources.Gather(eco, name, version, enrich)` → the three fetchers and
+`sources.Gather(eco, name, version, enrich)` → every fetcher and
 `enrichDepsDev`; `vet.Vet(ecosystem, name, version, enrich)`;
 `gate.Gate.Vet(caller, ecosystem, name, version, enrich)`. `vet.Verdict` gains
 `Version string` alongside `LatestVersion`.
@@ -378,8 +434,10 @@ P0 and P1 are self-contained engine work and deliver most of the value on the
 existing surfaces. P2 is what the Gradle plugin needs. P3 upgrades the honest
 "published since" wording into a real "behind" count.
 
-**P0 and P1 have landed.** Two things came out differently from the sketch
-above, both noted in place: absolute staleness is a floor rather than a fallback
+**P0 and P1 have landed, for all nine ecosystems.** The plan was written when
+there were three; the six that followed answer version questions on the same
+terms, with what each registry made expensive recorded in §2. Two things came out
+differently from the sketch above, both noted in place: absolute staleness is a floor rather than a fallback
 (§5), and `version-prerelease` is -30 rather than -15 so that it costs a band on
 its own (§4). One thing the sketch left open is settled: a lookup miss is
 confirmed against a per-version endpoint before it is ever reported as

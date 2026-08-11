@@ -113,6 +113,11 @@ Example output:
 | PyPI | `pypi` | Python | pypi.org | `requests` |
 | Maven Central | `maven` | Java, Kotlin, Scala | repo1.maven.org | `groupId:artifactId` |
 | NuGet | `nuget` | C#, F#, VB.NET | api.nuget.org | `Newtonsoft.Json` (case-insensitive) |
+| crates.io | `cargo` | Rust | crates.io | `serde` |
+| Go modules | `go` | Go | proxy.golang.org | `github.com/pkg/errors` (full module path) |
+| Packagist | `packagist` | PHP | repo.packagist.org | `vendor/package` |
+| pub.dev | `pub` | Dart, Flutter | pub.dev | `http` |
+| Hex | `hex` | Elixir, Erlang | hex.pm | `phoenix` |
 
 Every one is read from the registry that actually resolves the dependency, so
 existence is authoritative rather than inferred. Which signals a given
@@ -381,8 +386,8 @@ so an internal endpoint is a few lines of code to implement.
 | release pace | registry version history | ported from the original DepMesh `ArtifactReleasePaceMetrics` |
 | staleness | latest release date | soft penalty >2y, hard >5y |
 | package age | first release date | <60 days old = slopsquatting-risk flag |
-| deprecation | npm `deprecated` / PyPI yanked / NuGet `deprecation` | heavy penalty |
-| maintainers | registry metadata | bus-factor ≤1 penalized |
+| deprecation | npm `deprecated`, PyPI yanked, NuGet `deprecation`, go.mod `// Deprecated:`, Packagist `abandoned`, a fully yanked crate or retracted pub package, or a Hex retirement on the current release | heavy penalty |
+| maintainers | registry metadata (npm, Packagist, Hex) | bus-factor ≤1 penalized |
 | license | registry / POM / deps.dev | missing or copyleft flagged |
 | advisories | deps.dev (optional) | degrades gracefully when unreachable |
 
@@ -390,8 +395,10 @@ Data sources are layered: the package's own registry (see
 [Ecosystems](#ecosystems)) is authoritative and always consulted;
 [deps.dev](https://deps.dev)
 enriches with advisories and licenses when reachable and is silently skipped
-when not (common behind corporate egress policies). A degraded source is
-reported in the output rather than guessed around.
+when not (common behind corporate egress policies). It does not cover
+Packagist, pub.dev or Hex, which leaves those without an advisory signal
+rather than with a wrong one. A degraded source is reported in the output
+rather than guessed around.
 
 ## Status
 
@@ -409,9 +416,9 @@ own average release gap, which flags a weekly-release project that has gone
 silent for a few months long before a fixed two-year threshold would, while
 still applying that threshold as a floor.
 
-The engine can also vet a **specific version** — advisories, license, yanks,
-and how far behind the pin is, measured in the project's own release intervals
-— but no surface exposes it yet: the CLI, MCP server, and API all still ask
+The engine can also vet a **specific version** in every supported ecosystem —
+advisories, license, yanks, and how far behind the pin is, measured in the
+project's own release intervals — but no surface exposes it yet: the CLI, MCP server, and API all still ask
 package-level questions. See [docs/VERSION-VETTING.md](docs/VERSION-VETTING.md)
 for the design and what remains.
 

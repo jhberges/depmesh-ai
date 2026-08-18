@@ -97,46 +97,66 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern=v{{version}},value=${{ needs.release.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release.outputs.version }}
-            type=raw,value=latest
-
+      # No docker/* actions here, and no QEMU. The Dockerfile cross-compiles
+      # with the Go toolchain (FROM --platform=$BUILDPLATFORM, GOARCH=$TARGETARCH),
+      # so the arm64 image is a native build of a different target rather than an
+      # emulated build — there is nothing for QEMU to do. The rest is the docker
+      # CLI the runner already ships. Six marketplace actions is a lot of
+      # unaudited third-party code to put in the release path of a tool that
+      # sells itself on not enlarging your supply chain.
       - name: Build and push
         id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          build-args: VERSION=${{ needs.release.outputs.version }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # A tool whose whole pitch is supply-chain integrity should be able to
-          # answer "where did this image come from" about itself.
-          provenance: true
-          sbom: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          VERSION: ${{ needs.release.outputs.version }}
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
-      - uses: sigstore/cosign-installer@v3
+          # Multi-platform output needs the docker-container driver; the
+          # default docker driver can only load a single architecture.
+          docker buildx create --use --name depmesh --driver docker-container
 
+          # vX.Y.Z, the X.Y series tag, and latest. $VERSION is already
+          # normalized to a leading "v" by the release job.
+          series="${VERSION#v}"
+          series="${series%.*}"
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "VERSION=${VERSION}" \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:${series}" \
+            --tag "${IMAGE}:latest" \
+            --provenance=true \
+            --sbom=true \
+            --metadata-file /tmp/build-metadata.json \
+            --push .
+
+          # The digest is what gets signed, so it has to come from the build
+          # rather than from a later tag lookup — by then "latest" could point
+          # somewhere else.
+          digest="$(jq -er '."containerimage.digest"' /tmp/build-metadata.json)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      # Pinned by version *and* by hash. Fetching a "latest" installer to
+      # establish provenance for a release would be assuming the thing we are
+      # trying to prove. Same shape as scripts/install.sh's own download check.
       - name: Sign the image
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          COSIGN_VERSION: v3.1.3
+          COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
         # Keyless, against the workflow's OIDC identity — no key to store and
         # none to leak. Signing the digest rather than a tag is the point: tags
         # move, and a signature over a tag says nothing about what it points at.
-        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${DIGEST}"
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/cosign \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
+          chmod +x /tmp/cosign
+          /tmp/cosign sign --yes "${IMAGE}@${DIGEST}"

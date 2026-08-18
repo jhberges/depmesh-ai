@@ -80,24 +80,23 @@ jobs:
   # policy in read-only, audit out to a volume, non-root, fails closed — is
   # worth a gate rather than a README promise. Builds only; publishing happens
   # in release.yml.
+  #
+  # Every Docker step here is the plain CLI rather than a marketplace action.
+  # The runner ships Docker and BuildKit already, so the actions would buy
+  # convenience in exchange for third-party code in the CI of a tool whose
+  # entire claim is that it does not enlarge your supply chain. The job above
+  # fails the build over one external Go dependency; it would be a strange
+  # place to import six GitHub Actions.
   image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
+      # Single-arch on purpose: this job proves the image behaves, and the
+      # multi-arch matrix is release.yml's job. `docker build` loads into the
+      # local daemon by definition, so the smoke tests below can just run it.
       - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: depmesh-ai:ci
-          # amd64 only here: this job proves the image behaves, and the
-          # multi-arch matrix is release.yml's job.
-          platforms: linux/amd64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: docker build --build-arg VERSION=ci -t depmesh-ai:ci .
 
       # Everything below is deliberately offline. A smoke test that vets a real
       # package would put npmjs.org's availability on the critical path of every

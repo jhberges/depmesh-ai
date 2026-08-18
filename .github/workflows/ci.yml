@@ -75,3 +75,100 @@ jobs:
             "$PWD/scripts/install.ps1", [ref]$null, [ref]$errors) | Out-Null
           if ($errors) { $errors | ForEach-Object { Write-Host $_ }; exit 1 }
           Write-Host 'install.ps1 parses cleanly'
+
+  # The image is how the API surface actually gets deployed, so its contract —
+  # policy in read-only, audit out to a volume, non-root, fails closed — is
+  # worth a gate rather than a README promise. Builds only; publishing happens
+  # in release.yml.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: depmesh-ai:ci
+          # amd64 only here: this job proves the image behaves, and the
+          # multi-arch matrix is release.yml's job.
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Everything below is deliberately offline. A smoke test that vets a real
+      # package would put npmjs.org's availability on the critical path of every
+      # pull request, and a red CI that means "npm is having a morning" is a CI
+      # people learn to ignore.
+      - name: The image runs as a non-root user
+        run: |
+          set -euo pipefail
+          user="$(docker inspect -f '{{.Config.User}}' depmesh-ai:ci)"
+          [ "$user" = "65532:65532" ] || { echo "runs as '$user', want 65532:65532"; exit 1; }
+
+      - name: A missing policy mount is a startup error
+        run: |
+          set -euo pipefail
+          # $DEPMESH_POLICY makes the path explicit, so policy.Load must treat
+          # the absent file as fatal rather than falling through to "no policy".
+          # A gate that serves with nothing to enforce is the failure this
+          # assertion exists to prevent.
+          if docker run --rm depmesh-ai:ci; then
+            echo "started with no policy mounted — the fail-fast contract is broken"
+            exit 1
+          fi
+
+      - name: Start the gate
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/dm
+          cat > /tmp/dm/policy.json <<'JSON'
+          {"min_score": 70, "fail_on": "caution"}
+          JSON
+          docker volume create dm-audit
+          docker run -d --name dm -p 8385:8385 \
+            -v /tmp/dm/policy.json:/etc/depmesh/policy.json:ro \
+            -v dm-audit:/var/log/depmesh \
+            --read-only depmesh-ai:ci
+          for _ in $(seq 1 30); do
+            curl -fsS localhost:8385/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+      - name: The startup line reports both mounts
+        run: |
+          set -euo pipefail
+          docker logs dm
+          docker logs dm 2>&1 | grep -q 'policy: true' \
+            || { echo "policy mount did not resolve"; exit 1; }
+          docker logs dm 2>&1 | grep -q 'audit: "/var/log/depmesh/decisions.jsonl"' \
+            || { echo "audit path is not what the image sets"; exit 1; }
+
+      - name: healthz answers
+        run: |
+          set -euo pipefail
+          [ "$(curl -fsS localhost:8385/healthz)" = "ok" ]
+
+      - name: An unknown ecosystem is a 400, without touching a registry
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            localhost:8385/v1/vet/cpan/Some::Module)"
+          [ "$code" = "400" ] || { echo "got $code, want 400"; exit 1; }
+
+      # SIGTERM is how every container runtime asks a process to stop. Without
+      # the drain in api.ListenAndServe this takes the full 10s and ends in a
+      # SIGKILL, so the timing is the assertion.
+      - name: Stopping the container drains rather than gets killed
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          docker stop dm >/dev/null
+          elapsed=$(( $(date +%s) - start ))
+          code="$(docker inspect -f '{{.State.ExitCode}}' dm)"
+          echo "stopped in ${elapsed}s with exit code ${code}"
+          [ "$code" = "0" ] || { echo "exit $code — 137 means it was killed, not drained"; exit 1; }
+          [ "$elapsed" -lt 8 ] || { echo "took ${elapsed}s — the drain is not working"; exit 1; }

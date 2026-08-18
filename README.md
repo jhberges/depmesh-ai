@@ -314,6 +314,98 @@ greedy enough to swallow a coordinate whole:
 curl 'localhost:8385/v1/vet/npm/express?version=4.18.2'
 ```
 
+The listen address comes from `--listen`, then `$DEPMESH_LISTEN`, then `:8385`.
+
+### Running it in a container
+
+The two things that make this gate a compliance control — the policy it
+enforces and the log it writes — are the two things it takes as mounts:
+
+```bash
+docker run -d --name depmesh -p 8385:8385 \
+  -v ./depmesh.policy.json:/etc/depmesh/policy.json:ro \
+  -v depmesh-audit:/var/log/depmesh \
+  --read-only \
+  ghcr.io/jhberges/depmesh-ai
+```
+
+| Path | Mode | What goes there |
+|---|---|---|
+| `/etc/depmesh/policy.json` | read-only | the policy the gate enforces |
+| `/var/log/depmesh/` | read-write | `decisions.jsonl` and its rotated siblings |
+
+There is a `docker-compose.yml` in the repo with the same thing wired up.
+
+**The image refuses to start without a policy.** `$DEPMESH_POLICY` is set to the
+mount path, which makes it *explicit* — a missing file is a startup error rather
+than a quiet fall-through to "no policy at all". That is deliberate: a gate
+serving traffic with nothing to enforce looks healthy and blocks nothing. To
+evaluate the image without one, `-e DEPMESH_POLICY=`.
+
+**The audit volume must be writable by uid 65532, or nothing works.** The
+container runs as `65532:65532` and auditing fails closed, so an audit
+destination it cannot write to does not degrade the log — it turns *every vet
+request into a 500*. Worse, `/healthz` keeps answering `200` throughout, so a
+health check will call the gate fine while it refuses every decision. A named
+volume inherits the right ownership and just works; a host bind mount keeps the
+host's ownership and needs `chown 65532:65532 ./audit` first.
+
+**The image sets `--audit-log`, which overrides the `audit_log` field in your
+policy file.** That is what guarantees decisions are recorded even when a
+mounted policy forgot to say where. If you would rather the policy decide,
+override the command and drop the flag: `... ghcr.io/jhberges/depmesh-ai api`.
+
+Nothing is written outside `/var/log/depmesh`, so `--read-only` is safe. The
+image is `distroless/static` — no shell, no package manager, one static binary —
+and is published multi-arch for `linux/amd64` and `linux/arm64`, with build
+provenance, an SBOM, and a cosign signature over the digest:
+
+```bash
+cosign verify ghcr.io/jhberges/depmesh-ai:latest \
+  --certificate-identity-regexp 'https://github.com/jhberges/depmesh-ai/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+On Kubernetes, probe `/healthz` from the kubelet — there is no shell in the
+image to run a `HEALTHCHECK` with:
+
+```yaml
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532          # makes the audit volume writable by that uid
+  containers:
+    - name: depmesh
+      image: ghcr.io/jhberges/depmesh-ai:latest
+      ports: [{ containerPort: 8385 }]
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities: { drop: ["ALL"] }
+      readinessProbe:
+        httpGet: { path: /healthz, port: 8385 }
+      livenessProbe:
+        httpGet: { path: /healthz, port: 8385 }
+        initialDelaySeconds: 10
+      volumeMounts:
+        - { name: policy, mountPath: /etc/depmesh, readOnly: true }
+        - { name: audit,  mountPath: /var/log/depmesh }
+  volumes:
+    - name: policy
+      configMap:
+        name: depmesh-policy
+        items: [{ key: policy.json, path: policy.json }]
+    - name: audit
+      persistentVolumeClaim: { claimName: depmesh-audit }
+```
+
+The gate drains in-flight requests on `SIGTERM` rather than dropping them, so
+rolling restarts and scale-downs don't strand a decision between "served" and
+"recorded". Containerizing changes nothing about authentication — see the
+caveat at the end of the next section, which applies exactly as it does to a
+gate running on a host.
+
 ### Pointing developers at it
 
 The API is only half the story: a developer whose MCP server still calls npm
@@ -490,6 +582,10 @@ over and why the architecture changed.
 ```bash
 go test ./...
 go vet ./...
+
+# The container image for `depmesh-ai api`. VERSION only stamps the binary's
+# reported version; the build itself is the same either way.
+docker build --build-arg VERSION=dev -t depmesh-ai:dev .
 ```
 
 ## License

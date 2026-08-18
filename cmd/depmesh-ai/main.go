@@ -48,6 +48,8 @@ Ranges are refused, not resolved: pass the version your build tool resolved.
 policy is auto-discovered from ./depmesh.policy.json or $DEPMESH_POLICY;
 --policy makes it explicit and errors when the file is missing.
 
+the api listens on :8385 unless --listen or $DEPMESH_LISTEN says otherwise.
+
 --upstream (or $DEPMESH_UPSTREAM) delegates the decision to a central
 "depmesh-ai api" instance, so this machine needs no registry access and the
 gate's policy and audit log apply. It never falls back to direct registry
@@ -109,6 +111,28 @@ func resolveUpstream(flagValue string) string {
 		return flagValue
 	}
 	return os.Getenv("DEPMESH_UPSTREAM")
+}
+
+// defaultListen is the port the API binds when nothing says otherwise.
+const defaultListen = ":8385"
+
+// resolveListen prefers the flag, then the environment, then the default. The
+// --listen flag therefore defaults to the empty string rather than to
+// defaultListen: with a non-empty flag default, "not given" and "given the
+// default" are the same value, and the environment could never win. `--help`
+// still shows :8385 because the usage string says so.
+//
+// The environment matters here because the API is the surface that gets
+// deployed rather than invoked, and a deployment configures ports with
+// environment variables — the same reason $DEPMESH_POLICY exists.
+func resolveListen(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if fromEnv := os.Getenv("DEPMESH_LISTEN"); fromEnv != "" {
+		return fromEnv
+	}
+	return defaultListen
 }
 
 func buildGate(options gateOptions, upstreamURL string) *gate.Gate {
@@ -220,13 +244,14 @@ func runServe(args []string) int {
 
 func runAPI(args []string) int {
 	flags := flag.NewFlagSet("api", flag.ExitOnError)
-	listen := flags.String("listen", ":8385", "listen address")
+	listen := flags.String("listen", "", "listen address (default: $DEPMESH_LISTEN or "+defaultListen+")")
 	options := gateFlags(flags)
 	_ = flags.Parse(args)
+	addr := resolveListen(*listen)
 	g := buildGate(options, "")
 	fmt.Fprintf(os.Stderr, "depmesh-ai %s serving on %s (policy: %v, audit: %q)\n",
-		gate.Version, *listen, g.Policy != nil, g.Audit.Path)
-	if err := api.ListenAndServe(*listen, g); err != nil {
+		gate.Version, addr, g.Policy != nil, g.Audit.Path)
+	if err := api.ListenAndServe(addr, g); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}

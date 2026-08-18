@@ -1,0 +1,51 @@
+# One depmesh-ai gate for a network. Developer machines and CI runners then
+# point at it with --upstream (or $DEPMESH_UPSTREAM) and need no registry
+# egress of their own:
+#
+#   depmesh-ai vet   --upstream http://depmesh.internal:8385 npm express
+#   depmesh-ai serve --upstream http://depmesh.internal:8385
+#
+# The API has no authentication. Keep this on a trusted network, or put a
+# reverse proxy that terminates mTLS in front of it.
+
+services:
+  depmesh:
+    image: ghcr.io/jhberges/depmesh-ai:latest
+    # Comment the image out and uncomment this to run your working tree.
+    # build:
+    #   context: .
+    #   args:
+    #     VERSION: dev
+    container_name: depmesh
+    restart: unless-stopped
+    ports:
+      - "8385:8385"
+
+    volumes:
+      # The policy the gate enforces. Read-only, because nothing should be
+      # editing the reviewed rules from inside the container. The gate refuses
+      # to start if this is missing.
+      - ./depmesh.policy.json:/etc/depmesh/policy.json:ro
+
+      # A named volume rather than a bind mount, on purpose. The container runs
+      # as uid 65532 and auditing fails closed — if the audit destination is not
+      # writable, *every* request returns 500 rather than degrading quietly. A
+      # named volume inherits the image directory's ownership and just works; a
+      # host bind mount keeps the host's ownership and needs an explicit
+      # `chown 65532:65532` first.
+      - depmesh-audit:/var/log/depmesh
+
+    # Nothing is written outside /var/log/depmesh, so the rest can be sealed.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    # No healthcheck stanza: compose runs `test` inside this container, and a
+    # distroless image has no shell, curl or wget to run it with. Check the gate
+    # from outside instead — `curl -fsS localhost:8385/healthz` — or use a
+    # Kubernetes httpGet probe, which does the request from the kubelet rather
+    # than from inside the container. The README has that manifest.
+
+volumes:
+  depmesh-audit:

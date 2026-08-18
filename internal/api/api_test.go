@@ -2,10 +2,13 @@ package api
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/jhberges/depmesh-ai/internal/gate"
 	"github.com/jhberges/depmesh-ai/internal/upstream"
@@ -125,4 +128,79 @@ func TestVersionRangeIs400(t *testing.T) {
 	if !strings.Contains(string(body), "constraint") {
 		t.Errorf("body = %s, want it to say a constraint was passed", body)
 	}
+}
+
+// Timeouts are easy to add and just as easy to lose in a later refactor, and
+// losing them is invisible until something holds a connection open. The
+// write budget gets its own assertion because it is the one with a floor
+// underneath it: a vet spends up to 20s on the registry and another 20s on
+// deps.dev enrichment, so anything below that turns a slow answer into a
+// truncated one.
+func TestServerTimeouts(t *testing.T) {
+	server := newServer(":0", &gate.Gate{})
+	if server.ReadHeaderTimeout <= 0 {
+		t.Error("ReadHeaderTimeout unset: the server can be held open by a partial request")
+	}
+	if server.ReadTimeout <= 0 || server.IdleTimeout <= 0 {
+		t.Errorf("ReadTimeout=%v IdleTimeout=%v, both must be set", server.ReadTimeout, server.IdleTimeout)
+	}
+	if floor := 40 * time.Second; server.WriteTimeout <= floor {
+		t.Errorf("WriteTimeout=%v, must exceed %v — the registry and enrichment calls alone can take that long",
+			server.WriteTimeout, floor)
+	}
+}
+
+// A container runtime stops the gate with SIGTERM. Without the drain that is an
+// abrupt kill, and a request cut between the audit rotate and the append is a
+// decision neither served nor recorded.
+func TestListenAndServeDrainsOnSIGTERM(t *testing.T) {
+	addr := freeAddr(t)
+	returned := make(chan error, 1)
+	go func() { returned <- ListenAndServe(addr, &gate.Gate{}) }()
+
+	waitUntilServing(t, addr)
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("could not signal self: %v", err)
+	}
+
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("shutdown returned %v, want a clean stop", err)
+		}
+	case <-time.After(shutdownGrace + 5*time.Second):
+		t.Fatal("ListenAndServe did not return after SIGTERM — the signal is not being handled")
+	}
+}
+
+// freeAddr borrows a port and hands it back. Racy in principle; the alternative
+// is an injectable listener, which is more API surface than one test is worth.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+// waitUntilServing also orders the test: the signal handler is registered
+// before the listener opens, so a connection that succeeds proves the SIGTERM
+// about to be sent will be caught rather than killing the test binary.
+func waitUntilServing(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("server never came up on %s", addr)
 }

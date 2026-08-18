@@ -16,10 +16,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/jhberges/depmesh-ai/internal/audit"
@@ -114,8 +119,72 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// ListenAndServe runs the API server on addr.
+// Server timeouts. The API is unauthenticated by design — it is meant to sit on
+// a trusted network — so it has no say in who opens a connection to it, and a
+// server with no timeouts at all is held open indefinitely by anyone who dribbles
+// a request header one byte at a time.
+//
+// writeTimeout is the one that cannot be tightened casually: a single vet makes
+// a registry call and then a deps.dev enrichment call, each on the 20s client in
+// internal/sources. Below the sum of those, a slow-but-working registry stops
+// looking slow and starts looking like a truncated response.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 90 * time.Second
+	idleTimeout       = 120 * time.Second
+
+	// shutdownGrace bounds the drain. Docker's default stop timeout is 10s
+	// before SIGKILL, so this is deliberately shorter: a drain that outlives
+	// the runtime's patience is the abrupt kill it was meant to replace.
+	shutdownGrace = 8 * time.Second
+)
+
+func newServer(addr string, g *gate.Gate) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           Handler(g),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
+// ListenAndServe runs the API server on addr until it is interrupted, then
+// drains in-flight requests before returning.
+//
+// The drain is not politeness. Auditing is fail-closed and rotation renames the
+// live file, so a request killed between the rotate and the append is a decision
+// that was neither served nor recorded — the one gap a compliance log must not
+// have. Under a container runtime that window would otherwise open on every
+// deploy, restart, and scale-down, which is to say constantly.
 func ListenAndServe(addr string, g *gate.Gate) error {
-	server := &http.Server{Addr: addr, Handler: Handler(g)}
-	return server.ListenAndServe()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	server := newServer(addr, g)
+	failed := make(chan error, 1)
+	go func() {
+		// ErrServerClosed is what Shutdown causes, so it is the success path
+		// here rather than a failure to report.
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			failed <- err
+		}
+		close(failed)
+	}()
+
+	select {
+	case err := <-failed:
+		return err
+	case <-ctx.Done():
+	}
+
+	// Stop catching the signal before draining: a second Ctrl-C now takes the
+	// default disposition and kills the process, so an operator is never stuck
+	// waiting out a drain that is going nowhere.
+	stop()
+	drain, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	return server.Shutdown(drain)
 }

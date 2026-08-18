@@ -1,0 +1,30 @@
+# The build needs go.mod, cmd/ and internal/ and nothing else — the Dockerfile
+# COPYs those three by name. Excluding the rest keeps the context small and,
+# more usefully, keeps a developer's local policy file and audit log out of the
+# image entirely: a real depmesh.policy.json is meant to arrive as a mount, and
+# decisions.jsonl is compliance evidence that has no business in a layer.
+
+.git
+.github
+.gitignore
+
+dist
+build
+
+docs
+scripts
+README.md
+LICENSE
+
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Local policy and audit artifacts.
+*.policy.json
+depmesh.policy.json
+*.jsonl
+
+# Tests do not run in the image build; the CI job runs them on the host.
+**/*_test.go
+**/testdata

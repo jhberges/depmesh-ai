@@ -30,8 +30,22 @@ const EnvVar = "DEPMESH_POLICY"
 
 type Exception struct {
 	Ecosystem string `json:"ecosystem"`
-	Package   string `json:"package"`
-	Reason    string `json:"reason"`
+	// Package is the coordinate, or a pattern for a set of them: "*" in this
+	// field matches any run of characters, so "com.acme.platform:*" covers one
+	// Maven group and "com.acme.proj.*:*" covers a namespace and its
+	// children. Everything else matches literally, case-insensitively.
+	//
+	// A pattern is a blunt instrument and deliberately the last resort. It
+	// excepts packages nobody reviewed individually — including, if the
+	// pattern reaches that far, a name that exists nowhere, which is the
+	// hallucination this tool exists to catch. Prefer naming the coordinate;
+	// prefer a registry (see registries) over a pattern for artifacts that
+	// are merely somewhere else. Where a pattern is genuinely the only
+	// answer, keep it as narrow as the case allows: the audit record carries
+	// the pattern that matched, so a broad one is at least visible after the
+	// fact.
+	Package string `json:"package"`
+	Reason  string `json:"reason"`
 	// Version, when set, narrows the exception to one release. Absent means
 	// every version, which is what an exception meant before versions existed
 	// and so keeps every policy file working unchanged.
@@ -39,10 +53,58 @@ type Exception struct {
 	// The narrow form is the more useful one: "we reviewed 2.14.1 and accepted
 	// it" is the exception people actually write, and scoping it to that
 	// release stops it silently covering the next one, which nobody reviewed.
+	//
+	// It takes no wildcard, and that is the same reasoning stated as a rule:
+	// the whole point of naming a version is that the next one is not covered.
 	Version string `json:"version,omitempty"`
 	// Expires is an ISO date (YYYY-MM-DD). An expired exception is ignored —
-	// exceptions must be re-justified, not immortal.
+	// exceptions must be re-justified, not immortal. Required on a pattern,
+	// which is the one form broad enough that "we will look at it again" has
+	// to be part of writing it down.
 	Expires string `json:"expires,omitempty"`
+}
+
+// wildcard reports whether this exception names a set rather than a package.
+func (e *Exception) wildcard() bool { return strings.Contains(e.Package, "*") }
+
+// matches reports whether the exception covers a coordinate. Ecosystem is
+// always exact (it is a closed set), Package is exact or a pattern, and
+// Version is exact when named.
+func (e *Exception) matches(ecosystem, pkg, version string) bool {
+	if !strings.EqualFold(e.Ecosystem, ecosystem) {
+		return false
+	}
+	if !globMatch(e.Package, pkg) {
+		return false
+	}
+	// A versioned exception covers that release and no other. An unversioned
+	// one covers the package, which is what it has always meant — including
+	// when the question is about a version.
+	return e.Version == "" || strings.EqualFold(e.Version, version)
+}
+
+// globMatch matches a package pattern where "*" stands for any run of
+// characters, including none. Case-insensitive, and "*" spans separators —
+// path.Match would refuse to cross the "/" in an npm scope, which is not what
+// somebody writing "@acme/*" means.
+func globMatch(pattern, s string) bool {
+	pattern, s = strings.ToLower(pattern), strings.ToLower(s)
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s
+	}
+	if !strings.HasPrefix(s, parts[0]) {
+		return false
+	}
+	s = s[len(parts[0]):]
+	for _, part := range parts[1 : len(parts)-1] {
+		idx := strings.Index(s, part)
+		if idx < 0 {
+			return false
+		}
+		s = s[idx+len(part):]
+	}
+	return strings.HasSuffix(s, parts[len(parts)-1])
 }
 
 type Licenses struct {
@@ -143,7 +205,42 @@ func Load(path string) (*Policy, error) {
 	default:
 		return nil, fmt.Errorf("policy %s: fail_on must be \"reject\" or \"caution\", got %q", path, p.FailOn)
 	}
+	for i := range p.Exceptions {
+		if err := p.Exceptions[i].validate(); err != nil {
+			return nil, fmt.Errorf("policy %s: %w", path, err)
+		}
+	}
 	return &p, nil
+}
+
+// validate refuses the exception forms that would quietly mean more than they
+// appear to. It runs at load, so a policy file says what it does or the tool
+// does not start — a gate that silently ignored half a rule would be worse
+// than one that refuses to run.
+func (e *Exception) validate() error {
+	if strings.Contains(e.Version, "*") {
+		return fmt.Errorf(
+			"exception for %q: version takes no wildcard — naming a version means the next one is not covered, "+
+				"so omit it to cover every version", e.Package)
+	}
+	if !e.wildcard() {
+		return nil
+	}
+	// Strip the wildcards and the coordinate separators; whatever is left is
+	// what the pattern actually pins down. Nothing left means it matches every
+	// package in the ecosystem, which is not an exception — it is switching
+	// the policy off for that ecosystem while looking like a rule.
+	literal := strings.NewReplacer("*", "", ":", "", "/", "", "@", "", ".", "").Replace(e.Package)
+	if literal == "" {
+		return fmt.Errorf(
+			"exception pattern %q matches every package in the ecosystem; name what it covers", e.Package)
+	}
+	if e.Expires == "" {
+		return fmt.Errorf(
+			"exception pattern %q needs an expires date — a pattern covers packages nobody reviewed one by one, "+
+				"which is exactly the exception that has to come back for review", e.Package)
+	}
+	return nil
 }
 
 // Apply evaluates a verdict against the policy.
@@ -246,16 +343,25 @@ func (p *Policy) licenseViolations(license string, unknown bool) []string {
 	return nil
 }
 
+// findException returns the exception covering this verdict, if any.
+//
+// Exact entries are considered before patterns, whatever order the file lists
+// them in. A coordinate somebody named and reviewed is the better record of a
+// decision than a pattern that happens to reach it, and this way adding a
+// broad pattern cannot silently change what a specific entry already said —
+// including narrowing it, when the specific entry names a version and the
+// pattern does not.
 func (p *Policy) findException(v *vet.Verdict, today time.Time) *Exception {
+	if e := p.matchException(v, today, false); e != nil {
+		return e
+	}
+	return p.matchException(v, today, true)
+}
+
+func (p *Policy) matchException(v *vet.Verdict, today time.Time, wildcards bool) *Exception {
 	for i := range p.Exceptions {
 		e := &p.Exceptions[i]
-		if !strings.EqualFold(e.Ecosystem, v.Ecosystem) || !strings.EqualFold(e.Package, v.Package) {
-			continue
-		}
-		// A versioned exception covers that release and no other. An
-		// unversioned one covers the package, which is what it has always
-		// meant — including when the question is about a version.
-		if e.Version != "" && !strings.EqualFold(e.Version, v.Version) {
+		if e.wildcard() != wildcards || !e.matches(v.Ecosystem, v.Package, v.Version) {
 			continue
 		}
 		if e.Expires != "" {

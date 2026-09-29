@@ -24,6 +24,12 @@
       "package": "org.apache.commons:commons-lang3",
       "reason": "Apache-2.0 confirmed via parent POM; approved by security architecture",
       "expires": "2027-06-30"
+    },
+    {
+      "ecosystem": "maven",
+      "package": "com.vendor.db:*-license",
+      "reason": "licence jars for a commercial driver; they ship with the driver and are on no registry. A pattern is the last resort, so it expires",
+      "expires": "2027-06-30"
     }
   ],
   "audit_log": "depmesh-decisions.jsonl",

@@ -237,7 +237,10 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
       "reason": "Apache-2.0 via parent POM, approved by security architecture",
       "expires": "2027-06-30" },
     { "ecosystem": "npm", "package": "left-pad", "version": "1.3.0",
-      "reason": "reviewed by AppSec, ticket SEC-4711", "expires": "2027-01-31" }
+      "reason": "reviewed by AppSec, ticket SEC-4711", "expires": "2027-01-31" },
+    { "ecosystem": "maven", "package": "com.vendor.db:*-license",
+      "reason": "licence jars for a commercial driver; they ship with the driver, not via a registry",
+      "expires": "2027-06-30" }
   ],
   "audit_log": "/var/log/depmesh/decisions.jsonl"
 }
@@ -253,6 +256,21 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
   not immortal. Expired or malformed exceptions fail closed. An exception with
   a `version` covers that release alone; without one it covers the package, as
   it always has.
+- `package` takes a **pattern**: `*` matches any run of characters, so
+  `com.acme.platform:*` covers a Maven group, `com.acme.proj.*:*` covers a
+  namespace and its children, and `@acme/*` covers an npm scope. Exact entries
+  are consulted before patterns, so a specific reviewed exception is never
+  silently widened by a broad one. `version` takes no wildcard — naming a
+  version means the next one is not covered, which is the whole point of
+  naming it.
+- **A pattern is the last resort, and it is the one form that must expire.**
+  It excepts packages nobody reviewed one by one, including — if it reaches
+  that far — a name that exists nowhere, which is the hallucination this tool
+  exists to catch. Reach for `registries` first when the artifacts are merely
+  somewhere else: a declared internal repository gets them *vetted*, where a
+  pattern only stops asking. A pattern that matches everything is refused at
+  load, and the audit record carries the pattern that matched, so a broad one
+  stays visible after the fact.
 - The four version rules judge the pin and are **inert when no version was
   asked about**, so one policy file serves both kinds of caller.
   `max_intervals_behind` is the one to reach for across ecosystems: twenty
@@ -284,7 +302,8 @@ loudest alarm, on the dependencies you trust most. Tell it where they live:
 
 - **A repository that declares `namespaces` owns them.** Coordinates under
   those groupId prefixes are resolved there and *nowhere else*, and prefixes
-  match on dot boundaries — `com.acme` covers `com.acme.platform`, not `com.acmecorp`.
+  match on dot boundaries — `com.acme` covers `com.acme.platform`, but not
+  `com.acmecorp`.
   That is the dependency-confusion defence: a public registry can never shadow
   a namespace you have claimed. A name that is absent from its own namespace
   still REJECTs, because your repository was asked and said no.

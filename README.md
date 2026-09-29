@@ -237,17 +237,40 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
       "reason": "Apache-2.0 via parent POM, approved by security architecture",
       "expires": "2027-06-30" },
     { "ecosystem": "npm", "package": "left-pad", "version": "1.3.0",
-      "reason": "reviewed by AppSec, ticket SEC-4711", "expires": "2027-01-31" }
+      "reason": "reviewed by AppSec, ticket SEC-4711", "expires": "2027-01-31" },
+    { "ecosystem": "maven", "package": "com.vendor.db:*-license",
+      "reason": "licence jars for a commercial driver; they ship with the driver, not via a registry",
+      "expires": "2027-06-30" }
   ],
   "audit_log": "/var/log/depmesh/decisions.jsonl"
 }
 ```
 
 - License rules are case-insensitive substring matches; `deny` beats `allow`.
+  Maven licenses are read from the POM and inherited through `<parent>`, the
+  way Maven itself resolves them. A license that could not be *read* is
+  reported as unknown rather than absent: it costs no score, and it fails
+  `require_declared` with a message saying so, because not having managed to
+  check is not evidence of compliance.
 - Exceptions are explicit, justified, and **expire** — they must be renewed,
   not immortal. Expired or malformed exceptions fail closed. An exception with
   a `version` covers that release alone; without one it covers the package, as
   it always has.
+- `package` takes a **pattern**: `*` matches any run of characters, so
+  `com.acme.platform:*` covers a Maven group, `com.acme.proj.*:*` covers a
+  namespace and its children, and `@acme/*` covers an npm scope. Exact entries
+  are consulted before patterns, so a specific reviewed exception is never
+  silently widened by a broad one. `version` takes no wildcard — naming a
+  version means the next one is not covered, which is the whole point of
+  naming it.
+- **A pattern is the last resort, and it is the one form that must expire.**
+  It excepts packages nobody reviewed one by one, including — if it reaches
+  that far — a name that exists nowhere, which is the hallucination this tool
+  exists to catch. Reach for `registries` first when the artifacts are merely
+  somewhere else: a declared internal repository gets them *vetted*, where a
+  pattern only stops asking. A pattern that matches everything is refused at
+  load, and the audit record carries the pattern that matched, so a broad one
+  stays visible after the fact.
 - The four version rules judge the pin and are **inert when no version was
   asked about**, so one policy file serves both kinds of caller.
   `max_intervals_behind` is the one to reach for across ecosystems: twenty
@@ -257,6 +280,46 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
   a violated one.
 - The CLI exit code, the MCP tool output, and the API status code all follow
   the policy decision when one is configured.
+
+## Internal repositories
+
+Your own artifacts are not on Maven Central, and a tool that only knows
+Central reports every one of them as a package that does not exist — its
+loudest alarm, on the dependencies you trust most. Tell it where they live:
+
+```json
+{
+  "registries": {
+    "maven": [
+      { "url": "https://nexus.example.com/repository/maven-releases",
+        "namespaces": ["com.acme", "com.example.internal"],
+        "username_env": "NEXUS_USER", "password_env": "NEXUS_PASSWORD" },
+      { "url": "https://plugins.gradle.org/m2" }
+    ]
+  }
+}
+```
+
+- **A repository that declares `namespaces` owns them.** Coordinates under
+  those groupId prefixes are resolved there and *nowhere else*, and prefixes
+  match on dot boundaries — `com.acme` covers `com.acme.platform`, but not
+  `com.acmecorp`.
+  That is the dependency-confusion defence: a public registry can never shadow
+  a namespace you have claimed. A name that is absent from its own namespace
+  still REJECTs, because your repository was asked and said no.
+- **Those packages are treated as internal** and are never reported to
+  slopsquat telemetry. An in-house artifact name is not a hallucination, and
+  it is nobody else's business.
+- **A repository with no `namespaces` joins the public search chain**, tried
+  after Maven Central. That is the form for a public repository Central does
+  not mirror — the Gradle Plugin Portal, where `*.gradle.plugin` marker
+  artifacts live, is the common one.
+- **Credentials are named here and read from the environment**, never written
+  here. This file belongs in git; a repository password does not. Credentials
+  are sent only to the repository they were configured for.
+- **Absence needs every repository to agree.** If one cannot be reached, the
+  answer is "unavailable", never "does not exist" — a VPN that is not up must
+  not report your whole internal namespace as hallucinated.
 
 ## Audit trail
 

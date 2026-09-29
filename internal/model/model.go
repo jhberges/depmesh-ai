@@ -118,9 +118,13 @@ type PackageFacts struct {
 	Name      string
 	Exists    *bool
 	// Releases is ordered newest-first, matching the legacy builder's contract.
-	Releases           []ReleaseRef
-	LatestVersion      string
-	License            string
+	Releases      []ReleaseRef
+	LatestVersion string
+	License       string
+	// LicenseUnknown separates "no license declared" from "we could not read
+	// one". Both leave License empty, and only the first is a finding: a
+	// rate-limited or unreachable POM must not be reported as a legal risk.
+	LicenseUnknown     bool
 	Description        string
 	Deprecated         bool
 	DeprecationMessage string
@@ -131,6 +135,11 @@ type PackageFacts struct {
 	// Degraded lists sources that could not be reached; signals depending on
 	// them degrade to "unknown" instead of guessing.
 	Degraded []string
+	// Internal marks a package resolved against a repository that declared
+	// its namespace — an in-house artifact. It is never reported to slopsquat
+	// telemetry: an internal name is not a hallucination, and it is nobody
+	// else's business.
+	Internal bool
 	// Requested holds the facts for one specific version, when the caller
 	// named one. Nil is the switch that keeps a package-only vet behaving
 	// exactly as it did before versions existed.

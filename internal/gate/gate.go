@@ -75,6 +75,16 @@ func New(policyPath, auditOverride, upstreamURL string) (*Gate, error) {
 		Upstream: upstreamURL,
 		Audit:    audit.Log{MaxSize: audit.DefaultMaxSize, Keep: audit.DefaultKeep},
 	}
+	// Repository configuration is process-wide rather than carried on the
+	// Gate, because the HTTP layer needs credentials far below any call that
+	// could hand them down. Every surface builds one gate before it serves,
+	// so this is written once; setting it unconditionally keeps a gate built
+	// without a policy from inheriting an earlier one's repositories.
+	var registries sources.Config
+	if p != nil {
+		registries = p.Registries
+	}
+	sources.Configure(registries)
 	var policyTelemetry string
 	if p != nil {
 		g.Audit.Path = p.AuditLog

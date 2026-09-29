@@ -73,11 +73,15 @@ type Verdict struct {
 
 	// Version is the release the caller asked about, empty when they asked
 	// only about the package.
-	Version       string   `json:"version,omitempty"`
-	LatestVersion string   `json:"latest_version,omitempty"`
-	License       string   `json:"license,omitempty"`
-	ReleaseCount  int      `json:"release_count"`
-	Degraded      []string `json:"degraded_sources,omitempty"`
+	Version       string `json:"version,omitempty"`
+	LatestVersion string `json:"latest_version,omitempty"`
+	License       string `json:"license,omitempty"`
+	// LicenseUnknown means the license could not be read, as opposed to not
+	// being declared. It travels in the JSON because a caller deciding what
+	// to do about an empty license needs to know which of the two it is.
+	LicenseUnknown bool     `json:"license_unknown,omitempty"`
+	ReleaseCount   int      `json:"release_count"`
+	Degraded       []string `json:"degraded_sources,omitempty"`
 
 	Pace        metrics.ReleasePaceMetrics `json:"-"`
 	VersionPace metrics.VersionPace        `json:"-"`
@@ -383,6 +387,7 @@ func Evaluate(facts *model.PackageFacts, today time.Time) *Verdict {
 		verdict.Version = facts.Requested.Version
 	}
 	verdict.License = facts.License
+	verdict.LicenseUnknown = facts.LicenseUnknown
 	verdict.ReleaseCount = len(facts.Releases)
 
 	if facts.Exists != nil && !*facts.Exists {
@@ -448,6 +453,14 @@ func Evaluate(facts *model.PackageFacts, today time.Time) *Verdict {
 	}
 
 	switch license := facts.License; {
+	case license == "" && facts.LicenseUnknown:
+		// Unknown is not a finding. The POM could not be read — a rate limit,
+		// a repository that was not reachable — and scoring that as an absent
+		// license would price a network fault as a legal risk.
+		signals = append(signals, Signal{
+			"license", 0,
+			"license could not be read from the registry — unknown, not absent",
+		})
 	case license == "":
 		signals = append(signals, Signal{"license", -15, "no license declared — legal risk for adoption"})
 	case isCopyleft(license):

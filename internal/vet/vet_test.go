@@ -145,3 +145,37 @@ func TestNetworkFailureDoesNotMeanNonexistent(t *testing.T) {
 		t.Fatalf("unknown existence treated as non-existence")
 	}
 }
+
+// A license we could not read is not a license the project failed to
+// declare. Scoring them the same made a rate-limited POM — or a repository
+// behind a VPN that was not up — read as a legal risk.
+func TestUnreadableLicenseIsUnknownNotMissing(t *testing.T) {
+	facts := healthyFacts()
+	facts.License = ""
+	facts.LicenseUnknown = true
+	v := Evaluate(facts, today)
+
+	for _, s := range v.Signals {
+		if s.Name != "license" {
+			continue
+		}
+		if s.Delta != 0 {
+			t.Errorf("an unreadable license scored %d, wanted 0", s.Delta)
+		}
+		if !strings.Contains(s.Reason, "could not be read") {
+			t.Errorf("reason %q does not say the license was unreadable", s.Reason)
+		}
+	}
+	if !v.LicenseUnknown {
+		t.Error("the verdict did not carry LicenseUnknown for its caller")
+	}
+
+	// The genuinely undeclared case must keep costing what it did.
+	missing := healthyFacts()
+	missing.License = ""
+	for _, s := range Evaluate(missing, today).Signals {
+		if s.Name == "license" && s.Delta != -15 {
+			t.Errorf("an undeclared license scored %d, wanted -15", s.Delta)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -215,5 +216,34 @@ func TestRejectedKeyIsReported(t *testing.T) {
 		if testCase.wantWarn && !strings.Contains(warnings.String(), TokenEnvVar) {
 			t.Fatalf("warning does not say what to check: %q", warnings.String())
 		}
+	}
+}
+
+// An internal artifact is never a slopsquat observation. Nobody outside the
+// organisation can register com.acme.platform:audit-log, and the name itself is
+// information about that organisation's internals — so it must not leave the
+// building even when the verdict is a non-existence REJECT, which is exactly
+// what an internal repository being unreachable produces.
+func TestInternalPackagesAreNeverReported(t *testing.T) {
+	var posted int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&posted, 1)
+	}))
+	defer server.Close()
+
+	v := vet.Evaluate(&model.PackageFacts{
+		Ecosystem: model.Maven,
+		Name:      "com.acme.platform:audit-log",
+		Exists:    model.Bool(false),
+		Internal:  true,
+	}, today)
+	if v.Advice != vet.Reject {
+		t.Fatalf("fixture is not the reporting case: advice %s", v.Advice)
+	}
+
+	ReportNonexistent(Config{URL: server.URL}, "test", v)
+	time.Sleep(50 * time.Millisecond)
+	if n := atomic.LoadInt32(&posted); n != 0 {
+		t.Errorf("an internal package name was sent to telemetry (%d posts)", n)
 	}
 }

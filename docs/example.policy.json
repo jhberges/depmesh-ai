@@ -7,6 +7,17 @@
     "require_declared": true
   },
   "ecosystems": ["npm", "pypi", "maven"],
+  "registries": {
+    "maven": [
+      {
+        "url": "https://nexus.example.com/repository/maven-releases",
+        "namespaces": ["com.example.internal"],
+        "username_env": "NEXUS_USER",
+        "password_env": "NEXUS_PASSWORD"
+      },
+      { "url": "https://plugins.gradle.org/m2" }
+    ]
+  },
   "exceptions": [
     {
       "ecosystem": "maven",

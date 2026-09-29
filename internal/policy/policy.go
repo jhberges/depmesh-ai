@@ -16,6 +16,7 @@ import (
 
 	"github.com/jhberges/depmesh-ai/internal/bytesize"
 	"github.com/jhberges/depmesh-ai/internal/model"
+	"github.com/jhberges/depmesh-ai/internal/sources"
 	"github.com/jhberges/depmesh-ai/internal/vet"
 )
 
@@ -63,6 +64,13 @@ type Policy struct {
 	Licenses   Licenses    `json:"licenses,omitempty"`
 	Ecosystems []string    `json:"ecosystems,omitempty"` // allowed ecosystems; empty = all
 	Exceptions []Exception `json:"exceptions,omitempty"`
+	// Registries adds repositories beyond each ecosystem's public default —
+	// an internal Nexus holding the organisation's own artifacts, or a public
+	// one the default does not mirror. It belongs in the policy file because
+	// "these namespaces are ours" is an organisational fact of exactly the
+	// kind this file exists to state, and because declaring it is what stops
+	// an internal library being reported as a hallucinated name.
+	Registries sources.Config `json:"registries,omitempty"`
 	// AuditLog is a path to append JSONL decision records to (see audit pkg).
 	AuditLog string `json:"audit_log,omitempty"`
 	// AuditMaxSize rotates the audit log once a record would carry it past
@@ -160,7 +168,7 @@ func (p *Policy) Apply(v *vet.Verdict, today time.Time) Result {
 			fmt.Sprintf("score %d is below the policy minimum %d", v.Score, p.MinScore))
 	}
 
-	violations = append(violations, p.licenseViolations(v.License)...)
+	violations = append(violations, p.licenseViolations(v.License, v.LicenseUnknown)...)
 	violations = append(violations, p.versionViolations(v)...)
 
 	return Result{Allowed: len(violations) == 0, Violations: violations}
@@ -205,13 +213,21 @@ func (p *Policy) versionViolations(v *vet.Verdict) []string {
 	return violations
 }
 
-func (p *Policy) licenseViolations(license string) []string {
+func (p *Policy) licenseViolations(license string, unknown bool) []string {
 	rules := p.Licenses
 	if license == "" {
-		if rules.RequireDeclared {
-			return []string{"no license declared and policy requires one"}
+		if !rules.RequireDeclared {
+			return nil
 		}
-		return nil
+		// A license we could not read still fails a policy that requires one —
+		// "we did not manage to check" is not evidence of compliance, and this
+		// file is a compliance gate. The message has to say which it is,
+		// though: sending somebody to hunt for a missing license declaration
+		// that is really a rate-limited fetch wastes their afternoon.
+		if unknown {
+			return []string{"license could not be read from the registry and policy requires a declared one"}
+		}
+		return []string{"no license declared and policy requires one"}
 	}
 	upper := strings.ToUpper(license)
 	for _, denied := range rules.Deny {

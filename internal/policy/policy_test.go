@@ -3,6 +3,7 @@ package policy
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,5 +257,51 @@ func TestUnversionedExceptionStillCoversAVersionedQuestion(t *testing.T) {
 	v.Advice = vet.Reject
 	if r := p.Apply(v, today); !r.Allowed || r.Exception == nil {
 		t.Fatalf("an unversioned exception stopped covering a version: %+v", r)
+	}
+}
+
+// require_declared still fails closed on a license we could not read — not
+// having managed to check is not evidence of compliance. The message has to
+// separate the two, though, or it sends somebody hunting for a missing
+// declaration that is really a rate-limited fetch.
+func TestUnreadableLicenseFailsRequireDeclaredWithItsOwnReason(t *testing.T) {
+	p := &Policy{Licenses: Licenses{RequireDeclared: true}}
+
+	v := verdict(vet.Adopt, 90, "")
+	v.LicenseUnknown = true
+	r := p.Apply(v, today)
+	if r.Allowed {
+		t.Fatal("an unreadable license passed a policy requiring a declared one")
+	}
+	if !strings.Contains(r.Violations[0], "could not be read") {
+		t.Errorf("violation %q does not say the license was unreadable", r.Violations[0])
+	}
+
+	r = p.Apply(verdict(vet.Adopt, 90, ""), today)
+	if r.Allowed || !strings.Contains(r.Violations[0], "no license declared") {
+		t.Errorf("an undeclared license lost its own message: %+v", r.Violations)
+	}
+}
+
+// The example policy file is documentation people copy. It has to keep
+// parsing, registries and all.
+func TestExamplePolicyFileLoads(t *testing.T) {
+	p, err := Load("../../docs/example.policy.json")
+	if err != nil {
+		t.Fatalf("the documented example does not load: %v", err)
+	}
+	if len(p.Registries.Maven) == 0 {
+		t.Error("the example no longer shows how to configure a repository")
+	}
+	var internal, public int
+	for _, repo := range p.Registries.Maven {
+		if len(repo.Namespaces) > 0 {
+			internal++
+		} else {
+			public++
+		}
+	}
+	if internal == 0 || public == 0 {
+		t.Errorf("the example should show both forms; got %d namespaced, %d public", internal, public)
 	}
 }

@@ -134,7 +134,17 @@ func load(path string) Config {
 
 // ReportNonexistent submits a hallucinated-name observation if (and only if)
 // an endpoint is configured and the verdict is a non-existence REJECT.
+//
+// Internal packages are never reported, whatever the verdict says about them.
+// A name resolved against a repository the organisation declared as its own
+// is an in-house artifact: it is not a hallucination, nobody outside can
+// register it, and the name itself — "com.acme.platform:audit-log" — is
+// information about that organisation's internals that has no business
+// leaving the building. This is the first check for that reason.
 func ReportNonexistent(config Config, version string, v *vet.Verdict) {
+	if v.Facts != nil && v.Facts.Internal {
+		return
+	}
 	if !config.Enabled() || v.Advice != vet.Reject || v.Facts == nil ||
 		v.Facts.Exists == nil || *v.Facts.Exists {
 		return

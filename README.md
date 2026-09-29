@@ -244,6 +244,11 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
 ```
 
 - License rules are case-insensitive substring matches; `deny` beats `allow`.
+  Maven licenses are read from the POM and inherited through `<parent>`, the
+  way Maven itself resolves them. A license that could not be *read* is
+  reported as unknown rather than absent: it costs no score, and it fails
+  `require_declared` with a message saying so, because not having managed to
+  check is not evidence of compliance.
 - Exceptions are explicit, justified, and **expire** — they must be renewed,
   not immortal. Expired or malformed exceptions fail closed. An exception with
   a `version` covers that release alone; without one it covers the package, as
@@ -257,6 +262,45 @@ tool runs (or point at one with `--policy` / `$DEPMESH_POLICY`):
   a violated one.
 - The CLI exit code, the MCP tool output, and the API status code all follow
   the policy decision when one is configured.
+
+## Internal repositories
+
+Your own artifacts are not on Maven Central, and a tool that only knows
+Central reports every one of them as a package that does not exist — its
+loudest alarm, on the dependencies you trust most. Tell it where they live:
+
+```json
+{
+  "registries": {
+    "maven": [
+      { "url": "https://nexus.example.com/repository/maven-releases",
+        "namespaces": ["com.acme", "com.example.internal"],
+        "username_env": "NEXUS_USER", "password_env": "NEXUS_PASSWORD" },
+      { "url": "https://plugins.gradle.org/m2" }
+    ]
+  }
+}
+```
+
+- **A repository that declares `namespaces` owns them.** Coordinates under
+  those groupId prefixes are resolved there and *nowhere else*, and prefixes
+  match on dot boundaries — `com.acme` covers `com.acme.platform`, not `com.acmecorp`.
+  That is the dependency-confusion defence: a public registry can never shadow
+  a namespace you have claimed. A name that is absent from its own namespace
+  still REJECTs, because your repository was asked and said no.
+- **Those packages are treated as internal** and are never reported to
+  slopsquat telemetry. An in-house artifact name is not a hallucination, and
+  it is nobody else's business.
+- **A repository with no `namespaces` joins the public search chain**, tried
+  after Maven Central. That is the form for a public repository Central does
+  not mirror — the Gradle Plugin Portal, where `*.gradle.plugin` marker
+  artifacts live, is the common one.
+- **Credentials are named here and read from the environment**, never written
+  here. This file belongs in git; a repository password does not. Credentials
+  are sent only to the repository they were configured for.
+- **Absence needs every repository to agree.** If one cannot be reached, the
+  answer is "unavailable", never "does not exist" — a VPN that is not up must
+  not report your whole internal namespace as hallucinated.
 
 ## Audit trail
 
